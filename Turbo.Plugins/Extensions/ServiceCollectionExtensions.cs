@@ -12,18 +12,12 @@ public static class ServiceCollectionExtensions
         HostApplicationBuilder builder
     )
     {
-        var pluginSection = builder.Configuration.GetSection(PluginConfig.SECTION_NAME);
-
-        services.Configure<PluginConfig>(pluginSection);
+        services.Configure<PluginConfig>(
+            builder.Configuration.GetSection(PluginConfig.SECTION_NAME)
+        );
 
         services.AddSingleton<PluginManager>();
         services.AddHostedService<PluginBootstrapper>();
-
-        if (builder.Environment.IsDevelopment())
-        {
-            services.AddHostedService<PluginHotReloadService>();
-            services.AddHostedService<PluginAutoBuildService>();
-        }
 
         return services;
     }

@@ -1,7 +1,5 @@
 using System;
-using System.Collections.Generic;
 using System.Collections.Concurrent;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Orleans;
@@ -31,8 +29,6 @@ public sealed class SessionGateway(IGrainFactory grainFactory) : ISessionGateway
 
     public PlayerId GetPlayerId(SessionKey key) =>
         _sessionToPlayer.TryGetValue(key, out var playerId) ? playerId : -1;
-
-    public IReadOnlyCollection<ISessionContext> GetSessions() => _sessions.Values.ToArray();
 
     public Task AddSessionAsync(SessionKey key, ISessionContext ctx)
     {

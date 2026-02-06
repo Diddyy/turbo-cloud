@@ -17,33 +17,34 @@ public sealed class PackageEncoder(IRevisionManager revisionManager, ILogger<Pac
     {
         try
         {
-            var composerType = pack.Composer.GetType();
+            var revision = _revisionManager.GetRevision(pack.Session.RevisionId);
 
-            if (
-                _revisionManager.TryGetSerializer(
-                    pack.Session.RevisionId,
-                    composerType,
-                    out var serializer
-                ) && serializer is not null
-            )
+            if (revision is not null)
             {
-                var payload = serializer.Serialize(pack.Composer).ToArray();
+                var composerType = pack.Composer.GetType();
 
-                if (pack.Session.CryptoOut is not null)
-                    payload = pack.Session.CryptoOut.Process(payload);
+                if (revision.Serializers.TryGetValue(composerType, out var serializer))
+                {
+                    var payload = serializer.Serialize(pack.Composer).ToArray();
 
-                _logger.LogDebug("Outgoing {Composer}", pack.Composer);
+                    if (pack.Session.CryptoOut is not null)
+                        payload = pack.Session.CryptoOut.Process(payload);
 
-                writer.Write(payload);
+                    _logger.LogDebug("Outgoing {Composer}", pack.Composer);
 
-                return payload.Length;
+                    writer.Write(payload);
+
+                    return payload.Length;
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Serializer not found for {Name} for {SessionKey}",
+                        composerType.Name,
+                        pack.Session.SessionKey
+                    );
+                }
             }
-
-            _logger.LogWarning(
-                "Serializer not found for {Name} for {SessionKey}",
-                composerType.Name,
-                pack.Session.SessionKey
-            );
         }
         catch (Exception ex)
         {
