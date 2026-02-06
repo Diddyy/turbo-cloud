@@ -52,7 +52,7 @@ public class ConsoleCommandService(IServiceProvider services)
         }
     }
 
-    private Task HandleCommandAsync(string input, CancellationToken ct)
+    private async Task HandleCommandAsync(string input, CancellationToken ct)
     {
         var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var cmd = parts[0].ToLowerInvariant();
@@ -61,7 +61,9 @@ public class ConsoleCommandService(IServiceProvider services)
         switch (cmd)
         {
             case "help":
-                System.Console.WriteLine("Available commands: help, quit, reload-plugins");
+                System.Console.WriteLine(
+                    "Available commands: help, quit, reload-plugins, reload-plugin <key>"
+                );
                 break;
 
             case "quit":
@@ -72,21 +74,27 @@ public class ConsoleCommandService(IServiceProvider services)
 
             case "reload-plugins":
                 var pluginMgr = _services.GetRequiredService<PluginManager>();
-                //await pluginMgr.LoadAll(true, false, ct);
+                await pluginMgr.LoadAllAsync(true, ct).ConfigureAwait(false);
+                System.Console.WriteLine("Plugins reloaded.");
                 break;
 
             case "reload-plugin":
             {
                 pluginMgr = _services.GetRequiredService<PluginManager>();
-                //await pluginMgr.Reload(args[0], ct);
+                if (args.Length == 0)
+                {
+                    System.Console.WriteLine("Usage: reload-plugin <key>");
+                    break;
+                }
+
+                await pluginMgr.ReloadAsync(args[0], ct).ConfigureAwait(false);
+                System.Console.WriteLine($"Plugin '{args[0]}' reloaded.");
                 break;
             }
 
             default:
-                System.Console.WriteLine("Unknown command: {Command}", cmd);
+                System.Console.WriteLine($"Unknown command: {cmd}");
                 break;
         }
-
-        return Task.CompletedTask;
     }
 }

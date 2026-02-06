@@ -85,17 +85,13 @@ public sealed class PluginManager(
         var envs = new List<PluginEnvelope>();
         var tasks = new List<Func<Task>>();
 
-        _dependents.Clear();
+        RebuildDependents(manifests);
 
         foreach (var m in manifests)
         {
             var gate = GetKeyGate(m.Key);
 
             await gate.WaitAsync(ct).ConfigureAwait(false);
-
-            foreach (var dep in m.Dependencies)
-                _dependents.GetOrAdd(dep.Key, _ => []).Add(m.Key);
-
             var folder = byKey[m.Key];
             LoadedAssembly asm;
 
@@ -170,6 +166,67 @@ public sealed class PluginManager(
             await UnloadRemovedAsync(envs.Select(d => d.Key), ct).ConfigureAwait(false);
 
         _logger.LogInformation("Loaded {Count} plugins", _live.Count);
+    }
+
+    public async Task ReloadAsync(string key, CancellationToken ct = default)
+    {
+        var discovered = DiscoverPlugins();
+        var manifests = PluginHelpers.SortManifests([.. discovered.Select(d => d.manifest)]);
+        var byKey = discovered.ToDictionary(
+            d => d.manifest.Key,
+            d => d.folder,
+            StringComparer.OrdinalIgnoreCase
+        );
+
+        RebuildDependents(manifests);
+
+        if (!byKey.TryGetValue(key, out var folder))
+        {
+            await UnloadAsync(key, ct).ConfigureAwait(false);
+            _logger.LogInformation("Plugin {Key} was removed from disk and unloaded.", key);
+            return;
+        }
+
+        var manifest = manifests.First(m => string.Equals(m.Key, key, StringComparison.OrdinalIgnoreCase));
+
+        foreach (var dep in manifest.Dependencies)
+        {
+            if (!_live.ContainsKey(dep.Key))
+                throw new InvalidOperationException(
+                    $"Cannot reload {key}; dependency {dep.Key} is not active."
+                );
+        }
+
+        var gate = GetKeyGate(key);
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+
+        try
+        {
+            if (_dependents.TryGetValue(key, out var deps) && deps.Any(_live.ContainsKey))
+                throw new InvalidOperationException(
+                    $"Cannot reload {key} while dependents are active: {string.Join(",", deps.Where(_live.ContainsKey))}"
+                );
+
+            var asm = GetLoadedPluginAssembly(manifest, folder);
+            var current = _live.GetValueOrDefault(key);
+
+            if (current is not null)
+                await StopAndTearDownAsync(current, ct).ConfigureAwait(false);
+
+            var next = await BuildEnvelopeAsync(asm, manifest, folder, ct).ConfigureAwait(false);
+            _live[key] = next;
+
+            var disp = await _processor
+                .ProcessAsync(asm.Assembly, next.ServiceProvider, ct)
+                .ConfigureAwait(false);
+            next.Disposables.Add(disp);
+
+            _logger.LogInformation("Reloaded plugin {Key}", key);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     public async Task UnloadAsync(string key, CancellationToken ct = default)
@@ -440,4 +497,15 @@ public sealed class PluginManager(
 
     private SemaphoreSlim GetKeyGate(string key) =>
         _keyLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+
+    private void RebuildDependents(IEnumerable<PluginManifest> manifests)
+    {
+        _dependents.Clear();
+
+        foreach (var manifest in manifests)
+        {
+            foreach (var dep in manifest.Dependencies)
+                _dependents.GetOrAdd(dep.Key, _ => []).Add(manifest.Key);
+        }
+    }
 }
