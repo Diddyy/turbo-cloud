@@ -1,7 +1,9 @@
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Turbo.Messages.Registry;
 using Turbo.Primitives.Messages.Incoming.Users;
+using Turbo.Primitives.Messages.Outgoing.Nft;
 
 namespace Turbo.PacketHandlers.Users;
 
@@ -13,6 +15,10 @@ public class GetUserNftChatStylesMessageHandler : IMessageHandler<GetUserNftChat
         CancellationToken ct
     )
     {
-        await ValueTask.CompletedTask.ConfigureAwait(false);
+        await ctx.SendComposerAsync(
+                new UserNftChatStylesMessageComposer { ChatStyleIds = new List<int>() },
+                ct
+            )
+            .ConfigureAwait(false);
     }
 }

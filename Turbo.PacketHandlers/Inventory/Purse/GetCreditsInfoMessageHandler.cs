@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Turbo.Messages.Registry;
@@ -16,12 +17,30 @@ public class GetCreditsInfoMessageHandler : IMessageHandler<GetCreditsInfoMessag
         CancellationToken ct
     )
     {
-        await ctx.SendComposerAsync(new CreditBalanceEventMessageComposer { Balance = "0" }, ct)
+        await ctx.SendComposerAsync(new CreditBalanceEventMessageComposer { Balance = "1337.0" }, ct)
             .ConfigureAwait(false);
         await ctx.SendComposerAsync(
                 new ActivityPointsMessageComposer
                 {
-                    PointsByCategoryId = ImmutableDictionary<int, int>.Empty,
+                    // Keep common activity-point categories present to match client startup expectations.
+                    PointsByCategoryId = ImmutableDictionary.CreateRange(
+                        new[]
+                        {
+                            new KeyValuePair<int, int>(0, 0),
+                            new KeyValuePair<int, int>(1, 0),
+                            new KeyValuePair<int, int>(2, 0),
+                            new KeyValuePair<int, int>(3, 0),
+                            new KeyValuePair<int, int>(4, 0),
+                            new KeyValuePair<int, int>(5, 0),
+                            new KeyValuePair<int, int>(6, 0),
+                            new KeyValuePair<int, int>(7, 0),
+                            new KeyValuePair<int, int>(101, 0),
+                            new KeyValuePair<int, int>(102, 0),
+                            new KeyValuePair<int, int>(103, 0),
+                            new KeyValuePair<int, int>(104, 0),
+                            new KeyValuePair<int, int>(105, 0),
+                        }
+                    ),
                 },
                 ct
             )

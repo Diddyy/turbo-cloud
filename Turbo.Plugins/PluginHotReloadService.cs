@@ -7,16 +7,20 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Turbo.Plugins.Configuration;
+using Turbo.Primitives.Messages.Outgoing.Notifications;
+using Turbo.Primitives.Networking;
 
 namespace Turbo.Plugins;
 
 public sealed class PluginHotReloadService(
     PluginManager pluginManager,
+    ISessionGateway sessionGateway,
     IOptions<PluginConfig> config,
     ILogger<PluginHotReloadService> logger
 ) : IHostedService, IDisposable
 {
     private readonly PluginManager _pluginManager = pluginManager;
+    private readonly ISessionGateway _sessionGateway = sessionGateway;
     private readonly PluginConfig _config = config.Value;
     private readonly ILogger<PluginHotReloadService> _logger = logger;
     private readonly SemaphoreSlim _reloadGate = new(1, 1);
@@ -63,8 +67,9 @@ public sealed class PluginHotReloadService(
         );
 
         _logger.LogInformation(
-            "Plugin hot reload is enabled. Watching {Path}",
-            _config.PluginFolderPath
+            "Plugin hot reload is enabled. Watching {Path}. Session refresh mode: {Mode}",
+            _config.PluginFolderPath,
+            _config.HotReloadSessionRefresh
         );
 
         return Task.CompletedTask;
@@ -159,6 +164,7 @@ public sealed class PluginHotReloadService(
                 {
                     await _pluginManager.LoadAllAsync(true, _cts.Token).ConfigureAwait(false);
                     _logger.LogInformation("Plugin reload completed.");
+                    await RefreshConnectedSessionsAsync(_cts.Token).ConfigureAwait(false);
                     return;
                 }
                 catch (Exception ex)
@@ -240,5 +246,35 @@ public sealed class PluginHotReloadService(
         _debounceTimer?.Dispose();
         _debounceTimer = null;
         _cts.Cancel();
+    }
+
+    private async Task RefreshConnectedSessionsAsync(CancellationToken ct)
+    {
+        if (_config.HotReloadSessionRefresh == HotReloadSessionRefreshMode.None)
+            return;
+
+        var sessions = _sessionGateway.GetSessions();
+
+        if (sessions.Count == 0)
+            return;
+
+        foreach (var session in sessions)
+        {
+            try
+            {
+                if (_config.HotReloadSessionRefresh == HotReloadSessionRefreshMode.RestoreClient)
+                    await session
+                        .SendComposerAsync(new RestoreClientMessageComposer(), ct)
+                        .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Skipping hot-reload session refresh for session {SessionKey}; session likely disconnected during reload.",
+                    session.SessionKey
+                );
+            }
+        }
     }
 }

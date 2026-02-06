@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Turbo.Primitives.Orleans.Observers;
@@ -14,4 +15,5 @@ public interface ISessionGateway
     public Task RemoveSessionAsync(SessionKey key, CancellationToken ct);
     public Task AddSessionToPlayerAsync(SessionKey key, PlayerId playerId);
     public Task RemoveSessionFromPlayerAsync(PlayerId playerId, CancellationToken ct);
+    public IReadOnlyCollection<ISessionContext> GetSessions();
 }

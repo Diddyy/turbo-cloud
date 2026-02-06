@@ -2,6 +2,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Turbo.Messages.Registry;
 using Turbo.Primitives.Messages.Incoming.Groupforums;
+using Turbo.Primitives.Messages.Outgoing.Groupforums;
 
 namespace Turbo.PacketHandlers.Groupforums;
 
@@ -13,6 +14,10 @@ public class GetUnreadForumsCountMessageHandler : IMessageHandler<GetUnreadForum
         CancellationToken ct
     )
     {
-        await ValueTask.CompletedTask.ConfigureAwait(false);
+        await ctx.SendComposerAsync(
+                new UnreadForumsCountMessageComposer { UnreadForumsCount = 0 },
+                ct
+            )
+            .ConfigureAwait(false);
     }
 }

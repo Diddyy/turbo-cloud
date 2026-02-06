@@ -1,10 +1,13 @@
+using System.Collections.Generic;
 using Orleans;
 using Turbo.Primitives.Networking;
+using Turbo.Primitives.Orleans.Snapshots.Perk;
 
 namespace Turbo.Primitives.Messages.Outgoing.Perk;
 
 [GenerateSerializer, Immutable]
 public sealed record PerkAllowancesMessageComposer : IComposer
 {
-    // TODO: add properties if/when identified
+    [Id(0)]
+    public required List<PerkAllowanceSnapshot> Perks { get; init; }
 }

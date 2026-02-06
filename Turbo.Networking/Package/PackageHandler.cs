@@ -29,12 +29,9 @@ public sealed class PackageHandler(
 
         try
         {
-            var revision =
-                _revisionManager.GetRevision(ctx.RevisionId)
-                ?? throw new ArgumentNullException("No revision set");
-
-            if (revision.Parsers.TryGetValue(packet.Header, out var parser))
+            if (_revisionManager.TryGetParser(ctx.RevisionId, packet.Header, out var parser))
             {
+                ArgumentNullException.ThrowIfNull(parser);
                 var message = parser.Parse(packet);
 
                 _logger.LogDebug("Incoming {Message}", message);

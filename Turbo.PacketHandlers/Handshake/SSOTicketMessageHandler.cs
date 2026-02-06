@@ -14,7 +14,9 @@ using Turbo.Primitives.Messages.Outgoing.Inventory.Clothing;
 using Turbo.Primitives.Messages.Outgoing.Mysterybox;
 using Turbo.Primitives.Messages.Outgoing.Navigator;
 using Turbo.Primitives.Messages.Outgoing.Notifications;
+using Turbo.Primitives.Messages.Outgoing.Perk;
 using Turbo.Primitives.Networking;
+using Turbo.Primitives.Orleans.Snapshots.Perk;
 using Turbo.Primitives.Players.Enums;
 
 namespace Turbo.PacketHandlers.Handshake;
@@ -94,6 +96,88 @@ public class SSOTicketMessageHandler(
                         ClubLevel = ClubLevelType.Vip,
                         SecurityLevel = SecurityLevelType.Administrator,
                         IsAmbassador = false,
+                    },
+                    ct
+                )
+                .ConfigureAwait(false);
+            await ctx.SendComposerAsync(
+                    new PerkAllowancesMessageComposer
+                    {
+                        Perks =
+                        [
+                            new PerkAllowanceSnapshot
+                            {
+                                Code = "NAVIGATOR_ROOM_THUMBNAIL_CAMERA",
+                                ErrorMessage = string.Empty,
+                                IsAllowed = true,
+                            },
+                            new PerkAllowanceSnapshot
+                            {
+                                Code = "JUDGE_CHAT_REVIEWS",
+                                ErrorMessage = "requirement.unfulfilled.helper_level_6",
+                                IsAllowed = false,
+                            },
+                            new PerkAllowanceSnapshot
+                            {
+                                Code = "MOUSE_ZOOM",
+                                ErrorMessage = string.Empty,
+                                IsAllowed = true,
+                            },
+                            new PerkAllowanceSnapshot
+                            {
+                                Code = "HABBO_CLUB_OFFER_BETA",
+                                ErrorMessage = string.Empty,
+                                IsAllowed = true,
+                            },
+                            new PerkAllowanceSnapshot
+                            {
+                                Code = "TRADE",
+                                ErrorMessage = "requirement.unfulfilled.citizenship_level_3",
+                                IsAllowed = false,
+                            },
+                            new PerkAllowanceSnapshot
+                            {
+                                Code = "CAMERA",
+                                ErrorMessage = string.Empty,
+                                IsAllowed = true,
+                            },
+                            new PerkAllowanceSnapshot
+                            {
+                                Code = "NAVIGATOR_PHASE_TWO_2014",
+                                ErrorMessage = string.Empty,
+                                IsAllowed = true,
+                            },
+                            new PerkAllowanceSnapshot
+                            {
+                                Code = "BUILDER_AT_WORK",
+                                ErrorMessage = "requirement.unfulfilled.group_membership",
+                                IsAllowed = false,
+                            },
+                            new PerkAllowanceSnapshot
+                            {
+                                Code = "CALL_ON_HELPERS",
+                                ErrorMessage = string.Empty,
+                                IsAllowed = true,
+                            },
+                            new PerkAllowanceSnapshot
+                            {
+                                Code = "CITIZEN",
+                                ErrorMessage = string.Empty,
+                                IsAllowed = true,
+                            },
+                            new PerkAllowanceSnapshot
+                            {
+                                Code = "USE_GUIDE_TOOL",
+                                ErrorMessage = "requirement.unfulfilled.helper_level_4",
+                                IsAllowed = false,
+                            },
+                            new PerkAllowanceSnapshot
+                            {
+                                Code = "VOTE_IN_COMPETITIONS",
+                                ErrorMessage = "requirement.unfulfilled.helper_level_2",
+                                IsAllowed = false,
+                            },
+                        ],
                     },
                     ct
                 )

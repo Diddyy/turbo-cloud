@@ -1,14 +1,14 @@
 using System.Threading;
 using System.Threading.Tasks;
 using Turbo.Messages.Registry;
-using Turbo.Primitives.Messages.Incoming.Inventory;
+using Turbo.Primitives.Messages.Incoming.Room.Engine;
 
-namespace Turbo.PacketHandlers.Inventory;
+namespace Turbo.PacketHandlers.Room.Engine;
 
-public class GetCreditsInfoMessageHandler : IMessageHandler<GetCreditsInfoMessage>
+public class ClickCharacterMessageHandler : IMessageHandler<ClickCharacterMessage>
 {
     public async ValueTask HandleAsync(
-        GetCreditsInfoMessage message,
+        ClickCharacterMessage message,
         MessageContext ctx,
         CancellationToken ct
     )
@@ -16,3 +16,4 @@ public class GetCreditsInfoMessageHandler : IMessageHandler<GetCreditsInfoMessag
         await ValueTask.CompletedTask.ConfigureAwait(false);
     }
 }
+

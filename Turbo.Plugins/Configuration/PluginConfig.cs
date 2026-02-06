@@ -16,6 +16,9 @@ public class PluginConfig
 
     public string[] HotReloadGlobs { get; init; } = ["manifest.json", "*.dll", "*.pdb", "*.deps.json"];
 
+    public HotReloadSessionRefreshMode HotReloadSessionRefresh { get; init; } =
+        HotReloadSessionRefreshMode.RestoreClient;
+
     public bool AutoBuildOnSourceChange { get; init; } = false;
 
     public int AutoBuildDebounceMs { get; init; } = 900;

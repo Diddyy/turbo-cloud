@@ -1,7 +1,10 @@
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Turbo.Messages.Registry;
 using Turbo.Primitives.Messages.Incoming.Vault;
+using Turbo.Primitives.Messages.Outgoing.Vault;
+using Turbo.Primitives.Orleans.Snapshots.Vault;
 
 namespace Turbo.PacketHandlers.Vault;
 
@@ -13,6 +16,10 @@ public class IncomeRewardStatusMessageHandler : IMessageHandler<IncomeRewardStat
         CancellationToken ct
     )
     {
-        await ValueTask.CompletedTask.ConfigureAwait(false);
+        await ctx.SendComposerAsync(
+                new IncomeRewardStatusMessageComposer { IncomeRewards = new List<IncomeRewardSnapshot>() },
+                ct
+            )
+            .ConfigureAwait(false);
     }
 }

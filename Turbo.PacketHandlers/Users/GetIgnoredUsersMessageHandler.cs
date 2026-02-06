@@ -1,7 +1,9 @@
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Turbo.Messages.Registry;
 using Turbo.Primitives.Messages.Incoming.Users;
+using Turbo.Primitives.Messages.Outgoing.Users;
 
 namespace Turbo.PacketHandlers.Users;
 
@@ -13,6 +15,10 @@ public class GetIgnoredUsersMessageHandler : IMessageHandler<GetIgnoredUsersMess
         CancellationToken ct
     )
     {
-        await ValueTask.CompletedTask.ConfigureAwait(false);
+        await ctx.SendComposerAsync(
+                new IgnoredUsersMessageComposer { IgnoredUserIds = new List<int>() },
+                ct
+            )
+            .ConfigureAwait(false);
     }
 }

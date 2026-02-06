@@ -1,7 +1,9 @@
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Turbo.Messages.Registry;
 using Turbo.Primitives.Messages.Incoming.Users;
+using Turbo.Primitives.Messages.Outgoing.Notifications;
 
 namespace Turbo.PacketHandlers.Users;
 
@@ -13,6 +15,10 @@ public class GetMOTDMessageHandler : IMessageHandler<GetMOTDMessage>
         CancellationToken ct
     )
     {
-        await ValueTask.CompletedTask.ConfigureAwait(false);
+        await ctx.SendComposerAsync(
+                new MOTDNotificationEventMessageComposer { Messages = new List<string>() },
+                ct
+            )
+            .ConfigureAwait(false);
     }
 }
