@@ -41,6 +41,7 @@ public sealed class PluginManager(
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _keyLocks = new(
         StringComparer.OrdinalIgnoreCase
     );
+    private readonly SemaphoreSlim _reloadGate = new(1, 1);
 
     private static readonly ServiceProviderOptions SP_OPTIONS = new()
     {
@@ -75,157 +76,181 @@ public sealed class PluginManager(
 
     public async Task LoadAllAsync(bool unloadRemoved = true, CancellationToken ct = default)
     {
-        var discovered = DiscoverPlugins();
-        var manifests = PluginHelpers.SortManifests([.. discovered.Select(d => d.manifest)]);
-        var byKey = discovered.ToDictionary(
-            d => d.manifest.Key,
-            d => d.folder,
-            StringComparer.OrdinalIgnoreCase
-        );
-        var envs = new List<PluginEnvelope>();
-        var tasks = new List<Func<Task>>();
+        await _reloadGate.WaitAsync(ct).ConfigureAwait(false);
 
-        RebuildDependents(manifests);
-
-        foreach (var m in manifests)
+        try
         {
-            var gate = GetKeyGate(m.Key);
+            var discovered = DiscoverPlugins();
+            var manifests = PluginHelpers.SortManifests([.. discovered.Select(d => d.manifest)]);
+            var byKey = discovered.ToDictionary(
+                d => d.manifest.Key,
+                d => d.folder,
+                StringComparer.OrdinalIgnoreCase
+            );
+            var envs = new List<PluginEnvelope>();
+            var tasks = new List<Func<Task>>();
 
-            await gate.WaitAsync(ct).ConfigureAwait(false);
-            var folder = byKey[m.Key];
-            LoadedAssembly asm;
+            RebuildDependents(manifests);
 
-            try
+            foreach (var m in manifests)
             {
-                asm = GetLoadedPluginAssembly(m, folder);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(
-                    ex,
-                    "Failed to load assembly for {Name}@{Version} by {Author}",
-                    m.Name,
-                    m.Version,
-                    m.Author
-                );
+                var gate = GetKeyGate(m.Key);
 
-                gate.Release();
+                await gate.WaitAsync(ct).ConfigureAwait(false);
+                var folder = byKey[m.Key];
+                LoadedAssembly asm;
 
-                continue;
-            }
-
-            try
-            {
-                var current = _live.GetValueOrDefault(m.Key);
-
-                if (current is not null)
+                try
                 {
-                    if (_dependents.TryGetValue(m.Key, out var deps) && deps.Any(_live.ContainsKey))
-                        throw new InvalidOperationException(
-                            $"Cannot reload {m.Key} while dependents are active: {string.Join(",", deps.Where(_live.ContainsKey))}"
-                        );
+                    asm = GetLoadedPluginAssembly(m, folder);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Failed to load assembly for {Name}@{Version} by {Author}",
+                        m.Name,
+                        m.Version,
+                        m.Author
+                    );
 
-                    await StopAndTearDownAsync(current, ct).ConfigureAwait(false);
+                    gate.Release();
+
+                    continue;
                 }
 
-                var next = await BuildEnvelopeAsync(asm, m, folder, ct).ConfigureAwait(false);
-
-                _live[m.Key] = next;
-                envs.Add(next);
-
-                tasks.Add(async () =>
+                try
                 {
-                    var disp = await _processor
-                        .ProcessAsync(asm.Assembly, next.ServiceProvider, ct)
-                        .ConfigureAwait(false);
+                    var current = _live.GetValueOrDefault(m.Key);
 
-                    next.Disposables.Add(disp);
-                });
+                    if (current is not null)
+                    {
+                        if (
+                            _dependents.TryGetValue(m.Key, out var deps)
+                            && deps.Any(_live.ContainsKey)
+                        )
+                            throw new InvalidOperationException(
+                                $"Cannot reload {m.Key} while dependents are active: {string.Join(",", deps.Where(_live.ContainsKey))}"
+                            );
+
+                        await StopAndTearDownAsync(current, ct).ConfigureAwait(false);
+                    }
+
+                    var next = await BuildEnvelopeAsync(asm, m, folder, ct).ConfigureAwait(false);
+
+                    _live[m.Key] = next;
+                    envs.Add(next);
+
+                    tasks.Add(async () =>
+                    {
+                        var disp = await _processor
+                            .ProcessAsync(asm.Assembly, next.ServiceProvider, ct)
+                            .ConfigureAwait(false);
+
+                        next.Disposables.Add(disp);
+                    });
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Failed to load {Name}@{Version} by {Author}",
+                        m.Name,
+                        m.Version,
+                        m.Author
+                    );
+                }
+                finally
+                {
+                    gate.Release();
+                }
             }
-            catch (Exception ex)
+
+            var degree = Math.Max(2, Environment.ProcessorCount * 4);
+
+            await BoundedHelper.RunAsync(tasks, degree, ct).ConfigureAwait(false);
+
+            if (unloadRemoved)
+                await UnloadRemovedAsync(envs.Select(d => d.Key), ct).ConfigureAwait(false);
+
+            _logger.LogInformation("Loaded {Count} plugins", _live.Count);
+        }
+        finally
+        {
+            _reloadGate.Release();
+        }
+    }
+
+    public async Task ReloadAsync(string key, CancellationToken ct = default)
+    {
+        await _reloadGate.WaitAsync(ct).ConfigureAwait(false);
+
+        try
+        {
+            var discovered = DiscoverPlugins();
+            var manifests = PluginHelpers.SortManifests([.. discovered.Select(d => d.manifest)]);
+            var byKey = discovered.ToDictionary(
+                d => d.manifest.Key,
+                d => d.folder,
+                StringComparer.OrdinalIgnoreCase
+            );
+
+            RebuildDependents(manifests);
+
+            if (!byKey.TryGetValue(key, out var folder))
             {
-                _logger.LogError(
-                    ex,
-                    "Failed to load {Name}@{Version} by {Author}",
-                    m.Name,
-                    m.Version,
-                    m.Author
-                );
+                await UnloadAsync(key, ct).ConfigureAwait(false);
+                _logger.LogInformation("Plugin {Key} was removed from disk and unloaded.", key);
+                return;
+            }
+
+            var manifest = manifests.First(m =>
+                string.Equals(m.Key, key, StringComparison.OrdinalIgnoreCase)
+            );
+
+            var gate = GetKeyGate(key);
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+
+            try
+            {
+                foreach (var dep in manifest.Dependencies)
+                {
+                    if (!_live.ContainsKey(dep.Key))
+                        throw new InvalidOperationException(
+                            $"Cannot reload {key}; dependency {dep.Key} is not active."
+                        );
+                }
+
+                if (_dependents.TryGetValue(key, out var deps) && deps.Any(_live.ContainsKey))
+                    throw new InvalidOperationException(
+                        $"Cannot reload {key} while dependents are active: {string.Join(",", deps.Where(_live.ContainsKey))}"
+                    );
+
+                var asm = GetLoadedPluginAssembly(manifest, folder);
+                var current = _live.GetValueOrDefault(key);
+
+                if (current is not null)
+                    await StopAndTearDownAsync(current, ct).ConfigureAwait(false);
+
+                var next = await BuildEnvelopeAsync(asm, manifest, folder, ct).ConfigureAwait(false);
+                _live[key] = next;
+
+                var disp = await _processor
+                    .ProcessAsync(asm.Assembly, next.ServiceProvider, ct)
+                    .ConfigureAwait(false);
+                next.Disposables.Add(disp);
+
+                _logger.LogInformation("Reloaded plugin {Key}", key);
             }
             finally
             {
                 gate.Release();
             }
-        }
 
-        var degree = Math.Max(2, Environment.ProcessorCount * 4);
-
-        await BoundedHelper.RunAsync(tasks, degree, ct).ConfigureAwait(false);
-
-        if (unloadRemoved)
-            await UnloadRemovedAsync(envs.Select(d => d.Key), ct).ConfigureAwait(false);
-
-        _logger.LogInformation("Loaded {Count} plugins", _live.Count);
-    }
-
-    public async Task ReloadAsync(string key, CancellationToken ct = default)
-    {
-        var discovered = DiscoverPlugins();
-        var manifests = PluginHelpers.SortManifests([.. discovered.Select(d => d.manifest)]);
-        var byKey = discovered.ToDictionary(
-            d => d.manifest.Key,
-            d => d.folder,
-            StringComparer.OrdinalIgnoreCase
-        );
-
-        RebuildDependents(manifests);
-
-        if (!byKey.TryGetValue(key, out var folder))
-        {
-            await UnloadAsync(key, ct).ConfigureAwait(false);
-            _logger.LogInformation("Plugin {Key} was removed from disk and unloaded.", key);
-            return;
-        }
-
-        var manifest = manifests.First(m => string.Equals(m.Key, key, StringComparison.OrdinalIgnoreCase));
-
-        foreach (var dep in manifest.Dependencies)
-        {
-            if (!_live.ContainsKey(dep.Key))
-                throw new InvalidOperationException(
-                    $"Cannot reload {key}; dependency {dep.Key} is not active."
-                );
-        }
-
-        var gate = GetKeyGate(key);
-        await gate.WaitAsync(ct).ConfigureAwait(false);
-
-        try
-        {
-            if (_dependents.TryGetValue(key, out var deps) && deps.Any(_live.ContainsKey))
-                throw new InvalidOperationException(
-                    $"Cannot reload {key} while dependents are active: {string.Join(",", deps.Where(_live.ContainsKey))}"
-                );
-
-            var asm = GetLoadedPluginAssembly(manifest, folder);
-            var current = _live.GetValueOrDefault(key);
-
-            if (current is not null)
-                await StopAndTearDownAsync(current, ct).ConfigureAwait(false);
-
-            var next = await BuildEnvelopeAsync(asm, manifest, folder, ct).ConfigureAwait(false);
-            _live[key] = next;
-
-            var disp = await _processor
-                .ProcessAsync(asm.Assembly, next.ServiceProvider, ct)
-                .ConfigureAwait(false);
-            next.Disposables.Add(disp);
-
-            _logger.LogInformation("Reloaded plugin {Key}", key);
         }
         finally
         {
-            gate.Release();
+            _reloadGate.Release();
         }
     }
 

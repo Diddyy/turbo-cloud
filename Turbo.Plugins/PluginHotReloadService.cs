@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.IO.Enumeration;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -26,6 +27,7 @@ public sealed class PluginHotReloadService(
     private Timer? _debounceTimer;
     private bool _pendingReload;
     private string? _lastPath;
+    private int _shutdownStarted;
 
     public Task StartAsync(CancellationToken ct)
     {
@@ -70,25 +72,22 @@ public sealed class PluginHotReloadService(
 
     public Task StopAsync(CancellationToken ct)
     {
-        _cts.Cancel();
-        DisposeWatcher();
-        _debounceTimer?.Dispose();
-        _debounceTimer = null;
+        Shutdown();
         return Task.CompletedTask;
     }
 
     public void Dispose()
     {
-        _cts.Cancel();
-        DisposeWatcher();
-        _debounceTimer?.Dispose();
-        _debounceTimer = null;
+        Shutdown();
         _reloadGate.Dispose();
         _cts.Dispose();
     }
 
     private void OnFsEvent(object sender, FileSystemEventArgs e)
     {
+        if (Volatile.Read(ref _shutdownStarted) == 1)
+            return;
+
         if (!ShouldReactToPath(e.FullPath))
             return;
 
@@ -97,6 +96,9 @@ public sealed class PluginHotReloadService(
 
     private void OnFsRenamed(object sender, RenamedEventArgs e)
     {
+        if (Volatile.Read(ref _shutdownStarted) == 1)
+            return;
+
         if (!ShouldReactToPath(e.FullPath) && !ShouldReactToPath(e.OldFullPath))
             return;
 
@@ -143,10 +145,10 @@ public sealed class PluginHotReloadService(
             changedPath = _lastPath;
         }
 
-        await _reloadGate.WaitAsync(_cts.Token).ConfigureAwait(false);
-
         try
         {
+            await _reloadGate.WaitAsync(_cts.Token).ConfigureAwait(false);
+
             _logger.LogInformation("Plugin reload started (trigger: {Path})", changedPath ?? "<unknown>");
 
             const int maxAttempts = 3;
@@ -211,13 +213,7 @@ public sealed class PluginHotReloadService(
         if (string.IsNullOrWhiteSpace(pattern))
             return false;
 
-        if (
-            pattern.StartsWith("*.", StringComparison.Ordinal)
-            && fileName.EndsWith(pattern[1..], StringComparison.OrdinalIgnoreCase)
-        )
-            return true;
-
-        return string.Equals(fileName, pattern, StringComparison.OrdinalIgnoreCase);
+        return FileSystemName.MatchesSimpleExpression(pattern, fileName, ignoreCase: true);
     }
 
     private void DisposeWatcher()
@@ -233,5 +229,16 @@ public sealed class PluginHotReloadService(
         _watcher.Error -= OnFsError;
         _watcher.Dispose();
         _watcher = null;
+    }
+
+    private void Shutdown()
+    {
+        if (Interlocked.Exchange(ref _shutdownStarted, 1) == 1)
+            return;
+
+        DisposeWatcher();
+        _debounceTimer?.Dispose();
+        _debounceTimer = null;
+        _cts.Cancel();
     }
 }

@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Turbo.Contracts.Plugins;
@@ -20,17 +19,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<PluginManager>();
         services.AddHostedService<PluginBootstrapper>();
 
-        var pluginConfig = pluginSection.Get<PluginConfig>() ?? new PluginConfig();
-
-        if (builder.Environment.IsDevelopment() && pluginConfig.EnableHotReload)
+        if (builder.Environment.IsDevelopment())
+        {
             services.AddHostedService<PluginHotReloadService>();
-
-        if (
-            builder.Environment.IsDevelopment()
-            && pluginConfig.AutoBuildOnSourceChange
-            && pluginConfig.AutoBuildProjectPaths.Length > 0
-        )
             services.AddHostedService<PluginAutoBuildService>();
+        }
 
         return services;
     }

@@ -73,22 +73,36 @@ public class ConsoleCommandService(IServiceProvider services)
                 break;
 
             case "reload-plugins":
-                var pluginMgr = _services.GetRequiredService<PluginManager>();
-                await pluginMgr.LoadAllAsync(true, ct).ConfigureAwait(false);
-                System.Console.WriteLine("Plugins reloaded.");
+                try
+                {
+                    var pluginMgr = _services.GetRequiredService<PluginManager>();
+                    await pluginMgr.LoadAllAsync(true, ct).ConfigureAwait(false);
+                    System.Console.WriteLine("Plugins reloaded.");
+                }
+                catch (Exception ex)
+                {
+                    System.Console.WriteLine($"Reload failed: {ex.Message}");
+                }
                 break;
 
             case "reload-plugin":
             {
-                pluginMgr = _services.GetRequiredService<PluginManager>();
                 if (args.Length == 0)
                 {
                     System.Console.WriteLine("Usage: reload-plugin <key>");
                     break;
                 }
 
-                await pluginMgr.ReloadAsync(args[0], ct).ConfigureAwait(false);
-                System.Console.WriteLine($"Plugin '{args[0]}' reloaded.");
+                try
+                {
+                    var pluginMgr = _services.GetRequiredService<PluginManager>();
+                    await pluginMgr.ReloadAsync(args[0], ct).ConfigureAwait(false);
+                    System.Console.WriteLine($"Plugin '{args[0]}' reloaded.");
+                }
+                catch (Exception ex)
+                {
+                    System.Console.WriteLine($"Reload failed for '{args[0]}': {ex.Message}");
+                }
                 break;
             }
 

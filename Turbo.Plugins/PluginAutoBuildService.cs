@@ -27,6 +27,7 @@ public sealed class PluginAutoBuildService(
     private readonly HashSet<string> _pendingProjects = new(StringComparer.OrdinalIgnoreCase);
 
     private Timer? _debounceTimer;
+    private int _shutdownStarted;
 
     public Task StartAsync(CancellationToken ct)
     {
@@ -85,25 +86,22 @@ public sealed class PluginAutoBuildService(
 
     public Task StopAsync(CancellationToken ct)
     {
-        _cts.Cancel();
-        DisposeWatchers();
-        _debounceTimer?.Dispose();
-        _debounceTimer = null;
+        Shutdown();
         return Task.CompletedTask;
     }
 
     public void Dispose()
     {
-        _cts.Cancel();
-        DisposeWatchers();
-        _debounceTimer?.Dispose();
-        _debounceTimer = null;
+        Shutdown();
         _buildGate.Dispose();
         _cts.Dispose();
     }
 
     private void OnFsEvent(string projectPath, string changedPath)
     {
+        if (Volatile.Read(ref _shutdownStarted) == 1)
+            return;
+
         if (!ShouldTriggerBuild(changedPath))
             return;
 
@@ -133,10 +131,10 @@ public sealed class PluginAutoBuildService(
             _pendingProjects.Clear();
         }
 
-        await _buildGate.WaitAsync(_cts.Token).ConfigureAwait(false);
-
         try
         {
+            await _buildGate.WaitAsync(_cts.Token).ConfigureAwait(false);
+
             foreach (var project in projects)
             {
                 if (_cts.IsCancellationRequested)
@@ -212,16 +210,16 @@ public sealed class PluginAutoBuildService(
         if (string.IsNullOrWhiteSpace(fullPath))
             return false;
 
-        var normalized = fullPath.Replace('/', '\\');
+        var segments = fullPath.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries);
 
         if (
-            normalized.Contains("\\bin\\", StringComparison.OrdinalIgnoreCase)
-            || normalized.Contains("\\obj\\", StringComparison.OrdinalIgnoreCase)
-            || normalized.Contains("\\.git\\", StringComparison.OrdinalIgnoreCase)
+            segments.Any(s => string.Equals(s, "bin", StringComparison.OrdinalIgnoreCase))
+            || segments.Any(s => string.Equals(s, "obj", StringComparison.OrdinalIgnoreCase))
+            || segments.Any(s => string.Equals(s, ".git", StringComparison.OrdinalIgnoreCase))
         )
             return false;
 
-        var ext = Path.GetExtension(normalized);
+        var ext = Path.GetExtension(fullPath);
         if (string.IsNullOrWhiteSpace(ext))
             return false;
 
@@ -243,5 +241,16 @@ public sealed class PluginAutoBuildService(
         }
 
         _watchers.Clear();
+    }
+
+    private void Shutdown()
+    {
+        if (Interlocked.Exchange(ref _shutdownStarted, 1) == 1)
+            return;
+
+        DisposeWatchers();
+        _debounceTimer?.Dispose();
+        _debounceTimer = null;
+        _cts.Cancel();
     }
 }
