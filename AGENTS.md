@@ -1851,6 +1851,11 @@ finishing a change, check it against this list; each line is a mistake that was 
   because bans, capacity or deletion may have changed while it awaited. Doorbell approval
   ensures contents are ready before marking the pending entry approved.
 
+- **Automatic human chat look-at keeps the body fixed and uses only its forward direction
+  or either adjacent octant.** Ignore speakers outside that range and on the same tile.
+  AS3's avatar renderer accepts the server's head direction; apply this rule in the chat
+  system, not as a global clamp that changes explicit direction updates or pet behavior.
+
 ## Required validation before completion
 ```bash
 dotnet build Turbo.Main/Turbo.Main.csproj -t:TurboCloudFastCheck
