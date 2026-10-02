@@ -4,6 +4,7 @@ This adapter points Claude to the canonical AI contract for this repository.
 
 ## Required context load order
 1. `AGENTS.md`
+   - For branch, worktree, contribution and integration work, also read `docs/fork-workflow.md`.
 2. `CONTEXT.md`
 3. One relevant sample in `docs/patterns/`
 4. `.github/copilot-instructions.md` (tool adapter parity rules)
