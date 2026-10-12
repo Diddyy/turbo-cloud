@@ -1,7 +1,7 @@
 namespace Turbo.Operations.Configuration;
 
 /// <summary>
-/// Tunables of the operator commands. Every option carries the hotel default it ships with, so a
+/// Tunables of the operator commands and the word filter. Every option carries the hotel default it ships with, so a
 /// section left out of <c>appsettings.json</c> still starts.
 /// </summary>
 public class OperationsConfig
@@ -29,9 +29,32 @@ public class OperationsConfig
     /// <summary>The most items one <c>:giveitem</c> may add to an inventory.</summary>
     public int MaxGiveItemCount { get; init; } = 50;
 
+    /// <summary>
+    /// The longest note on a <c>:gift</c> tag, in characters; the catalog's gift dialog allows
+    /// the same by default.
+    /// </summary>
+    public int MaxGiftMessageLength { get; init; } = 140;
+
     /// <summary>The most names <c>:online</c> lists before it says how many it left out.</summary>
     public int OnlineListMaxNames { get; init; } = 200;
 
     /// <summary>The longest alert or warning, in characters.</summary>
     public int MaxAlertLength { get; init; } = 500;
+
+    /// <summary>
+    /// What a filtered word is replaced with, by the hotel's word filter and by each room's own.
+    /// </summary>
+    public string WordFilterReplacement { get; init; } = "bobba";
+
+    /// <summary>
+    /// How many calls for help a player may have waiting for a moderator; one more is refused
+    /// until staff close one. Keeps one player from filling the queue.
+    /// </summary>
+    public int CfhMaxOpenReports { get; init; } = 3;
+
+    /// <summary>The most chat lines kept with one call for help.</summary>
+    public int CfhMaxChatLines { get; init; } = 50;
+
+    /// <summary>How many of their own reports a player's report status lists, newest first.</summary>
+    public int CfhReportsListed { get; init; } = 50;
 }

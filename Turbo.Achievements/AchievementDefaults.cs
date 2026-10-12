@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Turbo.Primitives.Achievements;
 using Turbo.Primitives.Achievements.Enums;
 
@@ -10,34 +12,36 @@ namespace Turbo.Achievements;
 /// <summary>Published Habbo requirements with explicit hotel extensions and reward policy.</summary>
 public static class AchievementDefaults
 {
-    public static ImmutableArray<AchievementSourceDefinition> Sources { get; } =
-    [
-        new(AchievementSources.ONLINE, 1, AchievementReducer.ElapsedSeconds),
-        new(AchievementSources.LOGIN, 1, AchievementReducer.CalendarStreak),
-        new(AchievementSources.ACCOUNT_AGE, 1, AchievementReducer.Maximum),
-        new(AchievementSources.FIGURE, 1, AchievementReducer.Counter),
-        new(AchievementSources.MOTTO, 1, AchievementReducer.Counter),
-        new(AchievementSources.HC, 1, AchievementReducer.Maximum),
-        new(AchievementSources.PURCHASED_HC, 1, AchievementReducer.Maximum),
-        new(AchievementSources.VISIT, 1, AchievementReducer.Distinct),
-        new(AchievementSources.FURNITURE, 1, AchievementReducer.Counter),
-        new(AchievementSources.RESPECT_GIVEN, 1, AchievementReducer.Counter),
-        new(AchievementSources.RESPECT_RECEIVED, 1, AchievementReducer.Counter),
-        new(AchievementSources.PETS, 1, AchievementReducer.Maximum),
-        new(AchievementSources.NUTRITION, 1, AchievementReducer.Counter),
-        new(AchievementSources.PET_LEVEL, 1, AchievementReducer.Counter),
-        new(AchievementSources.PET_RESPECT_GIVEN, 1, AchievementReducer.Counter),
-        new(AchievementSources.PET_RESPECT_RECEIVED, 1, AchievementReducer.Counter),
-        new(AchievementSources.FLOOR_HEIGHTS, 1, AchievementReducer.Maximum),
-        new(AchievementSources.ROOM_RANK, 1, AchievementReducer.Rank),
-    ];
-
     public const string SOURCE_URL = "https://www.habbo.com/api/public/achievements";
 
     // Pin the public snapshot: startup and reload must not depend on a remote API.
     // Creation times in the snapshot describe definitions, never activation cutoffs.
     private static readonly ImmutableDictionary<string, JsonElement> PublishedCatalog =
         LoadPublishedCatalog();
+
+    /// <summary>
+    /// The crackables achievements crackable furni record, by published name: the one Sulake's furni
+    /// data names as an <c>incrementalHitAchievementName</c> counts every hit, the others - its
+    /// <c>finalHitAchievementName</c>s - count the hit that cracks one. Each is bound by name, the
+    /// value of the fact (lower case, as some of the data spells them). The category's other
+    /// records (GhostHunter, InfectedLab, HweenTombsCrackable) are named by no crackable in that
+    /// data and stay unhooked.
+    /// </summary>
+    private static readonly ImmutableDictionary<string, string> CrackableSources = new Dictionary<
+        string,
+        string
+    >(StringComparer.Ordinal)
+    {
+        ["PinataWhacker"] = AchievementSources.CRACKABLE_HIT,
+        ["PinataBreaker"] = AchievementSources.CRACKABLE_CRACKED,
+        ["Horticulturist"] = AchievementSources.CRACKABLE_CRACKED,
+        ["AdvancedHorticulturist"] = AchievementSources.CRACKABLE_CRACKED,
+        ["CreatureRearer"] = AchievementSources.CRACKABLE_CRACKED,
+        ["EasterCreatures"] = AchievementSources.CRACKABLE_CRACKED,
+        ["Farmer"] = AchievementSources.CRACKABLE_CRACKED,
+        ["Restorer"] = AchievementSources.CRACKABLE_CRACKED,
+        ["flamingknight"] = AchievementSources.CRACKABLE_CRACKED,
+    }.ToImmutableDictionary(StringComparer.Ordinal);
 
     public static ImmutableArray<AchievementDefinition> Definitions { get; } =
     [
@@ -199,6 +203,138 @@ public static class AchievementDefaults
         ),
     ];
 
+    /// <summary>
+    /// The first id of the published records the hotel has no hook for. Each is the API's own id
+    /// added to this, so an id never changes when the snapshot is refreshed.
+    /// </summary>
+    public const int UNHOOKED_ID_START = 10000;
+
+    /// <summary>
+    /// Every other published record. Nothing in the hotel records the facts most of them need, so
+    /// they ship disabled (retired ones archived) on <see cref="AchievementSources.UNHOOKED"/> with
+    /// their real category and thresholds: a hotel can keep, edit, retire or move any of them to a
+    /// source something records, and a plugin or a later release can hook one up.
+    /// </summary>
+    public static ImmutableArray<AchievementDefinition> Unhooked { get; } = BuildUnhooked();
+
+    /// <summary>
+    /// The published crackables records crackable furni record facts for, on
+    /// <see cref="AchievementSources.CRACKABLE_HIT"/> or <see cref="AchievementSources.CRACKABLE_CRACKED"/>
+    /// and matched by name, in their published state and thresholds.
+    /// </summary>
+    public static ImmutableArray<AchievementDefinition> Crackables { get; } =
+    [
+        .. PublishedCatalog
+            .Where(x => CrackableSources.ContainsKey(x.Key) && WhyNotRepresentable(x.Value) is null)
+            .OrderBy(x => x.Value.GetProperty("achievement").GetProperty("id").GetInt32())
+            .Select(x => HookCrackable(x.Key, x.Value)),
+    ];
+
+    /// <summary>
+    /// Published records that cannot be shipped faithfully, and why. They are listed in the
+    /// coverage CSV instead.
+    /// </summary>
+    public static ImmutableArray<(string Name, string Reason)> NotRepresentable { get; } =
+        PublishedCatalog
+            .Select(x => (Name: x.Key, Reason: WhyNotRepresentable(x.Value)))
+            .Where(x => x.Reason is not null)
+            .OrderBy(x => x.Name, StringComparer.Ordinal)
+            .Select(x => (x.Name, x.Reason!))
+            .ToImmutableArray();
+
+    private static ImmutableArray<AchievementDefinition> BuildUnhooked()
+    {
+        var mapped = Definitions
+            .Select(x => AchievementBadgeCodes.BaseOf(x.Levels[0].BadgeCode))
+            .Where(x => x.StartsWith("ACH_", StringComparison.Ordinal))
+            .Select(x => x["ACH_".Length..])
+            .ToHashSet(StringComparer.Ordinal);
+
+        return
+        [
+            .. PublishedCatalog
+                .Where(x =>
+                    !mapped.Contains(x.Key)
+                    && !CrackableSources.ContainsKey(x.Key)
+                    && WhyNotRepresentable(x.Value) is null
+                )
+                .OrderBy(x => x.Value.GetProperty("achievement").GetProperty("id").GetInt32())
+                .Select(x => Unhook(x.Key, x.Value)),
+        ];
+    }
+
+    private static string? WhyNotRepresentable(JsonElement published)
+    {
+        if (
+            !published.TryGetProperty("levelRequirements", out var levels)
+            || levels.GetArrayLength() == 0
+        )
+            return "The record has no levels.";
+        var scores = levels
+            .EnumerateArray()
+            .Select(x => x.GetProperty("requiredScore").GetInt32())
+            .ToArray();
+        for (var i = 1; i < scores.Length; i++)
+            if (scores[i] <= scores[i - 1])
+                return "Its thresholds do not strictly rise.";
+
+        return null;
+    }
+
+    private static AchievementDefinition Unhook(string name, JsonElement published)
+    {
+        var achievement = published.GetProperty("achievement");
+        var id = UNHOOKED_ID_START + achievement.GetProperty("id").GetInt32();
+        // A name that ends in a digit would run into the level number (bazaar17 level 1 would
+        // read as level 171), so those take an underscore before it.
+        var badgePrefix = "ACH_" + name + (char.IsAsciiDigit(name[^1]) ? "_" : "");
+
+        return Create(
+            id,
+            KeyOf(name),
+            achievement.GetProperty("category").GetString()!,
+            AchievementSources.UNHOOKED,
+            AchievementReducer.Counter,
+            1,
+            published
+                .GetProperty("levelRequirements")
+                .EnumerateArray()
+                .Select(x => x.GetProperty("requiredScore").GetInt32())
+                .ToArray(),
+            badgePrefix,
+            false,
+            0
+        ) with
+        {
+            Revision = 1,
+            State =
+                achievement.GetProperty("state").GetString() == "ARCHIVED"
+                    ? AchievementState.Archived
+                    : AchievementState.Disabled,
+        };
+    }
+
+    private static AchievementDefinition HookCrackable(string name, JsonElement published) =>
+        Unhook(name, published) with
+        {
+            Source = CrackableSources[name],
+            Match = new AchievementMatch { Values = [name.ToLowerInvariant()] },
+            State = published.GetProperty("achievement").GetProperty("state").GetString() switch
+            {
+                "ENABLED" => AchievementState.Enabled,
+                "ARCHIVED" => AchievementState.Archived,
+                "OFF_SEASON" => AchievementState.OffSeason,
+                _ => AchievementState.Disabled,
+            },
+        };
+
+    /// <summary><c>RoomEntry</c> becomes <c>room-entry</c>.</summary>
+    private static string KeyOf(string name) =>
+        Regex
+            .Replace(Regex.Replace(name, "([a-z0-9])([A-Z])", "$1-$2"), "[^A-Za-z0-9]+", "-")
+            .Trim('-')
+            .ToLowerInvariant();
+
     private static ImmutableDictionary<string, JsonElement> LoadPublishedCatalog()
     {
         using var stream =
@@ -245,11 +381,17 @@ public static class AchievementDefaults
             divisor,
             requirements.Select(x => x.GetProperty("requiredScore").GetInt32()).ToArray(),
             "ACH_" + publishedName,
-            state == "ENABLED",
+            true,
             0
         ) with
         {
-            Archived = state == "ARCHIVED",
+            State = state switch
+            {
+                "ENABLED" => AchievementState.Enabled,
+                "ARCHIVED" => AchievementState.Archived,
+                "OFF_SEASON" => AchievementState.OffSeason,
+                _ => AchievementState.Disabled,
+            },
         };
     }
 
@@ -275,7 +417,7 @@ public static class AchievementDefaults
             Reducer = reducer,
             UnitDivisor = divisor,
             Order = id,
-            Enabled = enabled,
+            State = enabled ? AchievementState.Enabled : AchievementState.Disabled,
             DisplayMethod = displayMethod,
             Levels = requirements
                 .Select(

@@ -1,0 +1,71 @@
+using System.Collections.Generic;
+
+namespace Turbo.Primitives.Gamedata;
+
+/// <summary>
+/// The gamedata files the hotel builds and serves, by the name Habbo's own addresses give them
+/// (<c>/gamedata/furnidata_json/&lt;hash&gt;</c>, <c>/gamedata/external_flash_texts/&lt;hash&gt;</c>),
+/// and the name Habbo's <c>/gamedata/hashes</c> lists each under.
+/// </summary>
+public static class GamedataFiles
+{
+    public const string FURNITURE_DATA = "furnidata_json";
+
+    /// <summary>The texts the client shows, as Habbo serves them: <c>key=value</c> lines.</summary>
+    public const string EXTERNAL_TEXTS = "external_flash_texts";
+
+    /// <summary>The name and description of each product, by the code an offer's name key gives.</summary>
+    public const string PRODUCT_DATA = "productdata_json";
+
+    /// <summary>
+    /// The colours and clothing avatars are drawn from, as the client loads it (FigureData.json):
+    /// Habbo serves the same data as XML at <c>figuredata</c>.
+    /// </summary>
+    public const string FIGURE_DATA = "figuredata_json";
+
+    /// <summary>
+    /// The client's configuration, as the JSON object Nitro loads (<c>nitro.config.url</c>): every
+    /// address it loads from, and how it behaves. Habbo serves its own as <c>key=value</c> lines
+    /// under the same name; Nitro's values are typed (booleans, numbers, lists), so this one is JSON.
+    /// </summary>
+    public const string EXTERNAL_VARIABLES = "external_variables";
+
+    /// <summary>
+    /// The group badge parts and badge palette, which the badge imager reads a badge code with.
+    /// Habbo has no such file: its imager holds its own table.
+    /// </summary>
+    public const string BADGE_PARTS = "badgeparts_json";
+
+    public static readonly IReadOnlyList<string> ALL =
+    [
+        FURNITURE_DATA,
+        PRODUCT_DATA,
+        EXTERNAL_TEXTS,
+        FIGURE_DATA,
+        EXTERNAL_VARIABLES,
+        BADGE_PARTS,
+    ];
+
+    public static bool IsKnown(string file) =>
+        file
+            is FURNITURE_DATA
+                or PRODUCT_DATA
+                or EXTERNAL_TEXTS
+                or FIGURE_DATA
+                or EXTERNAL_VARIABLES
+                or BADGE_PARTS;
+
+    /// <summary>The name Habbo's <c>hashes</c> gives the file.</summary>
+    public static string HashesName(string file) =>
+        file switch
+        {
+            FURNITURE_DATA => "furnidata",
+            PRODUCT_DATA => "productdata",
+            EXTERNAL_TEXTS => "external_texts",
+            FIGURE_DATA => "figurepartlist_json",
+            _ => file,
+        };
+
+    public static string ContentType(string file) =>
+        file == EXTERNAL_TEXTS ? "text/plain; charset=utf-8" : "application/json; charset=utf-8";
+}

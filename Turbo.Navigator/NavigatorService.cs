@@ -10,6 +10,7 @@ using Microsoft.Extensions.Options;
 using Orleans;
 using Turbo.Navigator.Configuration;
 using Turbo.Players.Configuration;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Navigator;
 using Turbo.Primitives.Navigator.Enums;
 using Turbo.Primitives.Navigator.Snapshots;
@@ -19,6 +20,7 @@ using Turbo.Primitives.Players.Messenger;
 using Turbo.Primitives.Players.Permissions;
 using Turbo.Primitives.Players.Providers;
 using Turbo.Primitives.Players.Snapshots.Navigator;
+using Turbo.Primitives.Quests;
 using Turbo.Primitives.Rooms;
 using Turbo.Primitives.Rooms.Enums;
 using Turbo.Primitives.Rooms.Snapshots;
@@ -37,7 +39,8 @@ public sealed class NavigatorService(
     IGrainFactory grainFactory,
     IOptions<NavigatorConfig> config,
     IOptions<PlayerNavigatorConfig> playerNavigatorConfig,
-    IPermissionRegistryProvider permissionRegistryProvider
+    IPermissionRegistryProvider permissionRegistryProvider,
+    IWordFilter wordFilter
 ) : INavigatorService
 {
     private readonly ILogger<INavigatorService> _logger = logger;
@@ -47,6 +50,7 @@ public sealed class NavigatorService(
     private readonly PlayerNavigatorConfig _playerNavigatorConfig = playerNavigatorConfig.Value;
     private readonly IPermissionRegistryProvider _permissionRegistryProvider =
         permissionRegistryProvider;
+    private readonly IWordFilter _wordFilter = wordFilter;
 
     public int FavouriteRoomLimit => _playerNavigatorConfig.MaxFavouriteRooms;
     public int MaxSearchCodeLength => _config.MaxSearchCodeLength;
@@ -230,7 +234,7 @@ public sealed class NavigatorService(
                 )
                 .ConfigureAwait(false),
             NavigatorSearchType.MyGuildBases => await GetLegacySectionAsync(
-                    NavigatorSearchCodes.GROUPS
+                    NavigatorSearchCodes.MY_GROUPS
                 )
                 .ConfigureAwait(false),
             NavigatorSearchType.GuildBases => await GetGuildBaseRoomsAsync(query, limit, ct)
@@ -409,6 +413,9 @@ public sealed class NavigatorService(
         if (!canCreate)
             return null;
 
+        name = _wordFilter.FilterAndTruncate(name, _config.RoomNameMaxLength);
+        description = _wordFilter.FilterAndTruncate(description, _config.RoomDescriptionMaxLength);
+
         var modelId = await _navigatorProvider
             .GetRoomModelIdByNameAsync(modelName ?? string.Empty, ct)
             .ConfigureAwait(false);
@@ -458,6 +465,13 @@ public sealed class NavigatorService(
             .GetRoomDirectoryGrain()
             .PublishListingChangesAsync(changedKeys, ct)
             .ConfigureAwait(false);
+
+        // A reward track task of that type counts the room (the player's grain ignores it when
+        // no task does); the creation does not wait on it.
+        _grainFactory
+            .GetPlayerRewardTrackGrain(playerId)
+            .RecordActionAsync(RewardTrackActionTypes.CREATE_ROOM, "", CancellationToken.None)
+            .LogAndForget(_logger, "count the room created by player {PlayerId}", playerId);
 
         return roomId;
     }
@@ -735,12 +749,14 @@ public sealed class NavigatorService(
 
                 return [.. MergeLive(cached, query, include: null).Take(limit)];
             }
-            case NavigatorSearchCodes.GROUPS:
+            case NavigatorSearchCodes.MY_GROUPS:
             {
                 var roomIds = await GetMyGuildBaseRoomIdsAsync(playerId, ct).ConfigureAwait(false);
 
                 return await GetRoomsInOrderAsync(query, roomIds, limit, ct).ConfigureAwait(false);
             }
+            case NavigatorSearchCodes.GROUPS:
+                return await GetGuildBaseRoomsAsync(query, limit, ct).ConfigureAwait(false);
             case NavigatorSearchCodes.TOP_PROMOTIONS:
             {
                 var rooms = await GetEventRoomsAsync(query, null, _config.SearchResultLimit, ct)

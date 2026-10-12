@@ -11,14 +11,17 @@ using Turbo.Primitives.Action;
 using Turbo.Primitives.Furniture;
 using Turbo.Primitives.Furniture.Interactions;
 using Turbo.Primitives.Messages.Outgoing.Room.Engine;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Orleans;
 using Turbo.Primitives.Players;
 using Turbo.Primitives.Players.Permissions;
+using Turbo.Primitives.Quests.Enums;
 using Turbo.Primitives.Rooms.Enums;
 using Turbo.Primitives.Rooms.Events.RoomItem;
 using Turbo.Primitives.Rooms.Object;
 using Turbo.Primitives.Rooms.Object.Furniture;
 using Turbo.Primitives.Rooms.Object.Furniture.Floor;
+using Turbo.Rooms.Object.Logic.Furniture.Floor;
 
 namespace Turbo.Rooms.Grains.Modules;
 
@@ -178,6 +181,23 @@ public sealed partial class RoomActionModule(RoomGrain roomGrain) : RoomGrainCom
         if (!_roomGrain._state.ItemsById.TryGetValue(itemId, out var item))
             throw new TurboException(TurboErrorCodeEnum.FloorItemNotFound);
 
+        // A find task completes on the double-click itself ("find the BBQ and double-click on
+        // it", quests.daily.FINDBBQ.hint), whether or not the player may change the furni.
+        if (ctx.Origin == ActionOrigin.Player && ctx.PlayerId > 0)
+            _roomGrain
+                ._grainFactory.GetPlayerDailyTaskGrain(ctx.PlayerId)
+                .RecordActivityAsync(
+                    DailyTaskActivity.FurniUse,
+                    item.Definition.Name,
+                    CancellationToken.None
+                )
+                .LogAndForget(
+                    _roomGrain._logger,
+                    "count the use of item {ItemId} by player {PlayerId} for daily tasks",
+                    itemId,
+                    ctx.PlayerId
+                );
+
         if (!await item.Logic.CanUseAsync(ctx))
             return false;
 
@@ -230,6 +250,26 @@ public sealed partial class RoomActionModule(RoomGrain roomGrain) : RoomGrainCom
         return await item.Logic.OnInteractAsync(ctx, interaction, ct);
     }
 
+    /// <summary>
+    /// A music action for the room's jukebox or sound machine, the first one placed when there
+    /// are several; the client plays one per room. False when the room has none.
+    /// </summary>
+    public async Task<bool> InteractWithMusicPlayerAsync(
+        ActionContext ctx,
+        FurnitureInteraction interaction,
+        CancellationToken ct
+    )
+    {
+        var player = _roomGrain
+            ._state.ItemsById.Values.Where(x => x.Logic is FurnitureJukeboxLogic)
+            .MinBy(x => x.ObjectId.Value);
+
+        if (player is null)
+            return false;
+
+        return await player.Logic.OnInteractAsync(ctx, interaction, ct);
+    }
+
     public async Task<bool> ClickItemByIdAsync(
         ActionContext ctx,
         RoomObjectId itemId,
@@ -276,6 +316,8 @@ public sealed partial class RoomActionModule(RoomGrain roomGrain) : RoomGrainCom
 
             return false;
         }
+
+        text = _roomGrain._wordFilter.FilterAndTruncate(text, config.StickieTextMaxLength);
 
         await item.Logic.SetLegacyDataAsync(StickieColors.Compose(color.ToUpperInvariant(), text));
 

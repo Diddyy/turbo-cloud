@@ -7,13 +7,13 @@ using Turbo.Primitives.Achievements;
 using Turbo.Primitives.Catalog.Providers;
 using Turbo.Primitives.Catalog.Tags;
 using Turbo.Primitives.Furniture.Providers;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Navigator;
 using Turbo.Primitives.Networking;
 using Turbo.Primitives.Networking.Revisions;
 using Turbo.Primitives.Pets.Providers;
 using Turbo.Primitives.Players.Providers;
 using Turbo.Primitives.Rooms.Providers;
-using Turbo.Primitives.Texts;
 using Turbo.Revisions.Revision20260909;
 
 namespace Turbo.Main;
@@ -21,7 +21,6 @@ namespace Turbo.Main;
 public class TurboEmulator(
     ILogger<TurboEmulator> logger,
     IFurnitureDefinitionProvider furnitureProvider,
-    IHotelTextProvider hotelTextProvider,
     ICatalogSnapshotProvider<NormalCatalog> catalogProvider,
     ICatalogSnapshotProvider<BuildersClubCatalog> buildersClubCatalogProvider,
     ICurrencyTypeProvider currencyTypeProvider,
@@ -30,13 +29,14 @@ public class TurboEmulator(
     INavigatorProvider topLevelContextProvider,
     IRoomModelProvider roomModelProvider,
     IPetBreedProvider petBreedProvider,
+    IPetSpeechProvider petSpeechProvider,
+    IWordFilter wordFilter,
     INetworkManager networkManager,
     IRevisionManager revisionManager
 ) : IHostedService
 {
     private readonly ILogger<TurboEmulator> _logger = logger;
     private readonly IFurnitureDefinitionProvider _furnitureProvider = furnitureProvider;
-    private readonly IHotelTextProvider _hotelTextProvider = hotelTextProvider;
     private readonly ICatalogSnapshotProvider<NormalCatalog> _catalogProvider = catalogProvider;
     private readonly ICatalogSnapshotProvider<BuildersClubCatalog> _buildersClubCatalogProvider =
         buildersClubCatalogProvider;
@@ -45,6 +45,8 @@ public class TurboEmulator(
     private readonly INavigatorProvider _topLevelContextProvider = topLevelContextProvider;
     private readonly IRoomModelProvider _roomModelProvider = roomModelProvider;
     private readonly IPetBreedProvider _petBreedProvider = petBreedProvider;
+    private readonly IPetSpeechProvider _petSpeechProvider = petSpeechProvider;
+    private readonly IWordFilter _wordFilter = wordFilter;
     private readonly INetworkManager _networkManager = networkManager;
     private readonly IRevisionManager _revisionManager = revisionManager;
 
@@ -57,12 +59,15 @@ public class TurboEmulator(
             await _catalogProvider.ReloadAsync(ct).ConfigureAwait(false);
             await _buildersClubCatalogProvider.ReloadAsync(ct).ConfigureAwait(false);
             await _currencyTypeProvider.ReloadAsync(ct).ConfigureAwait(false);
-            await achievements.ReloadAsync(ct).ConfigureAwait(false);
             await _chatStyleProvider.ReloadAsync(ct).ConfigureAwait(false);
             await _topLevelContextProvider.ReloadAsync(ct).ConfigureAwait(false);
             await _roomModelProvider.ReloadAsync(ct).ConfigureAwait(false);
             await _petBreedProvider.ReloadAsync(ct).ConfigureAwait(false);
-            await _hotelTextProvider.ReloadAsync(ct).ConfigureAwait(false);
+            await _petSpeechProvider.ReloadAsync(ct).ConfigureAwait(false);
+            await _wordFilter.ReloadAsync(ct).ConfigureAwait(false);
+            // After the currencies: installing a pack checks every enabled achievement's reward
+            // currency against them.
+            await achievements.ReloadAsync(ct).ConfigureAwait(false);
             await _networkManager.StartAsync(ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)

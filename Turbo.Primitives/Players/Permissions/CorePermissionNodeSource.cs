@@ -199,8 +199,12 @@ public sealed class CorePermissionNodeSource : IPermissionNodeSource
             "Use :giveitem to put furniture in a player's inventory."
         ),
         new(
+            PermissionNodes.Command.GIFT,
+            "Use :gift to send a player a present from the hotel, with a note and a badge."
+        ),
+        new(
             PermissionNodes.Command.GIVE_MASS,
-            "Aim :give, :givebadge, :takebadge and :giveitem at @room or @online. Always logged."
+            "Aim :give, :givebadge, :takebadge, :giveitem and :gift at @room or @online. Always logged."
         ),
         new(
             PermissionNodes.Command.GROUP,
@@ -258,6 +262,93 @@ public sealed class CorePermissionNodeSource : IPermissionNodeSource
         ),
         new(PermissionNodes.Role.AMBASSADOR, "Be an ambassador."),
         new(PermissionNodes.Permissions.MANAGE, "Edit groups and other players' permissions."),
+        new(
+            PermissionNodes.Permissions.SUPERUSER,
+            "Edit any group, player or node, without the weight and held-node limits of permissions.manage.",
+            ExplicitOnly: true
+        ),
+        new(PermissionNodes.Admin.PANEL, "Sign in to the admin panel with a passkey."),
+        new(
+            PermissionNodes.Admin.PASSKEYS_RESET,
+            "Give another player a link to set up or replace their admin panel passkey."
+        ),
+        new(
+            PermissionNodes.Admin.ROOMS_VIEW,
+            "Find any room in the admin panel and see its settings, occupants, rights and bans."
+        ),
+        new(
+            PermissionNodes.Admin.PLAYERS_VIEW,
+            "Find any player in the admin panel and see their profile, wallet, rooms and sanctions."
+        ),
+        new(
+            PermissionNodes.Admin.CATALOG_VIEW,
+            "See the catalog in the admin panel: its pages, offers and prices."
+        ),
+        new(
+            PermissionNodes.Catalog.MANAGE,
+            "Change the catalog in the admin panel and publish it to players."
+        ),
+        new(
+            PermissionNodes.Admin.GAMEDATA_VIEW,
+            "See the hotel's gamedata in the admin panel: Habbo's releases, pending updates, the client's files and their history."
+        ),
+        new(
+            PermissionNodes.Gamedata.MANAGE,
+            "Change the hotel's gamedata in the admin panel: import Habbo's updates, edit furniture, rebuild the client's files and roll back."
+        ),
+        new(
+            PermissionNodes.Admin.SETTINGS_VIEW,
+            "See the server's settings in the admin panel: each value, where it comes from and what waits on a restart. Secrets are never shown."
+        ),
+        new(
+            PermissionNodes.Settings.MANAGE,
+            "Change the server's settings in the admin panel: override appsettings.json, replace a secret, and put a setting back."
+        ),
+        new(
+            PermissionNodes.Admin.CONTENT_VIEW,
+            "See the game's content in the admin panel: achievements, badges, navigator categories, groups, pets and bots."
+        ),
+        new(
+            PermissionNodes.Content.MANAGE,
+            "Change the game's content in the admin panel: publish achievements, give and take badges, edit navigator categories, fix and remove groups, edit pet breeds, pet speech and bots."
+        ),
+        new(
+            PermissionNodes.Figure.ANY,
+            "Wear any clothing and colour, whatever the figure data says of club, sale or selection."
+        ),
+        new(
+            PermissionNodes.Club.HABBO_CLUB_UNLIMITED,
+            "Be a Habbo Club member for as long as this is held, without buying it."
+        ),
+        new(
+            PermissionNodes.Club.BUILDERS_CLUB_UNLIMITED,
+            "Be a Builders Club member, at the highest furni limit, for as long as this is held, without buying it."
+        ),
+        new(PermissionNodes.Admin.PLAYERS_CREATE, "Create new players in the admin panel."),
+        new(
+            PermissionNodes.Admin.TICKETS_ISSUE,
+            "Issue a player a login ticket in the admin panel, for players whose every permission they hold too."
+        ),
+        new(
+            PermissionNodes.Admin.ACCOUNTS_MANAGE,
+            "Unlink a player's Discord account and end their public site sign-ins, for players whose every permission they hold too."
+        ),
+        new(
+            PermissionNodes.Admin.WELCOME_MESSAGE_MANAGE,
+            "See and change the welcome message every player is shown when they log in, in the admin panel."
+        ),
+        new(
+            PermissionNodes.Admin.COMMAND_LOG_VIEW,
+            "Read the command log in the admin panel: who ran what, where from, and how it went."
+        ),
+        new(
+            PermissionNodes.Admin.CHATLOG_VIEW,
+            "Read the room chat log in the admin panel: what players said in rooms, whispers included."
+        ),
+        new(
+            PermissionNodes.Admin.PERMISSIONS_VIEW,
+            "See groups, players' permissions and the permission log in the admin panel."
+        ),
         new(PermissionNodes.Perk.CAMERA, "Use the camera.", Perk: PlayerPerkFlags.Camera),
         new(
             PermissionNodes.Perk.MOUSE_ZOOM,

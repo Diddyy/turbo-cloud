@@ -40,10 +40,24 @@ public sealed partial class RoomWiredSystem : IRoomPlacementLimit
     }
 
     /// <summary>A box's editor data, or null when the item is not a wired box.</summary>
-    public WiredDataSnapshot? GetBoxSnapshot(RoomObjectId itemId) =>
-        FurniModule.TryGetItem(itemId, out var item) && item.Logic is FurnitureWiredLogic wiredLogic
-            ? wiredLogic.GetSnapshot()
-            : null;
+    public async Task<WiredDataSnapshot?> GetBoxSnapshotAsync(
+        RoomObjectId itemId,
+        CancellationToken ct
+    )
+    {
+        if (
+            !FurniModule.TryGetItem(itemId, out var item)
+            || item.Logic is not FurnitureWiredLogic wiredLogic
+        )
+            return null;
+
+        await wiredLogic.EnsureWiredLoadedAsync(ct);
+
+        if (await wiredLogic.RefreshEditorContextAsync(ct))
+            wiredLogic.InvalidateSnapshot();
+
+        return wiredLogic.GetSnapshot();
+    }
 
     /// <summary>
     /// Saves a box from its editor. The room's wired permission is not enough for a box that
@@ -95,6 +109,8 @@ public sealed partial class RoomWiredSystem : IRoomPlacementLimit
 
         if (!canModify || controllerLevel < wiredLogic.MinimumControllerLevelToSave)
             throw new TurboException(TurboErrorCodeEnum.NoPermissionToModifyWired);
+
+        await wiredLogic.EnsureWiredLoadedAsync(ct);
 
         return await wiredLogic.ApplyWiredUpdateAsync(ctx, update, ct);
     }

@@ -56,11 +56,17 @@ public sealed partial class RoomMapModule
         }
     }
 
+    /// <param name="ignoreAvatars">
+    /// Whether avatars already on the tile are no obstacle: what a teleport asks, since it puts an
+    /// avatar down at once and several can share a tile. Closed and disabled tiles, and furni that
+    /// cannot be stood on, still refuse.
+    /// </param>
     public bool CanAvatarWalk(
         IRoomAvatar avatar,
         int tileIdx,
         bool isGoal = true,
-        bool isDiagonalCheck = false
+        bool isDiagonalCheck = false,
+        bool ignoreAvatars = false
     )
     {
         if (!InBounds(tileIdx))
@@ -71,7 +77,7 @@ public sealed partial class RoomMapModule
         if (tileFlags.Has(RoomTileFlags.Disabled) || tileFlags.Has(RoomTileFlags.Closed))
             return false;
 
-        if (tileFlags.Has(RoomTileFlags.AvatarOccupied))
+        if (!ignoreAvatars && tileFlags.Has(RoomTileFlags.AvatarOccupied))
         {
             if (_roomGrain._state.TileAvatarStacks[tileIdx].Contains(avatar.ObjectId))
                 return true;
@@ -110,6 +116,14 @@ public sealed partial class RoomMapModule
     )
     {
         if (!CanAvatarWalk(avatar, nTileIdx, isGoal))
+            return false;
+
+        // The search asks this too, so a way is planned around a step too high to take rather
+        // than over it and then refused on the first tick.
+        if (
+            Math.Abs(GetTileHeightForAvatar(nTileIdx) - GetTileHeightForAvatar(pTileIdx))
+            > Math.Abs(_roomGrain._roomConfig.MaxStepHeight)
+        )
             return false;
 
         var (fromX, fromY) = GetTileXY(pTileIdx);

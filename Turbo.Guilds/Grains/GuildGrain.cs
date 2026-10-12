@@ -13,6 +13,7 @@ using Turbo.Primitives.Guilds;
 using Turbo.Primitives.Guilds.Enums;
 using Turbo.Primitives.Guilds.Grains;
 using Turbo.Primitives.Guilds.Snapshots;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Orleans;
 using Turbo.Primitives.Players;
 
@@ -38,6 +39,7 @@ internal sealed partial class GuildGrain : Grain, IGuildGrain
     private readonly IDbContextFactory<TurboDbContext> _dbCtxFactory;
     private readonly IGrainFactory _grainFactory;
     private readonly GuildConfig _guildConfig;
+    private readonly IWordFilter _wordFilter;
     private readonly ILogger<IGuildGrain> _logger;
 
     private readonly GuildLiveState _state;
@@ -51,12 +53,14 @@ internal sealed partial class GuildGrain : Grain, IGuildGrain
         IDbContextFactory<TurboDbContext> dbCtxFactory,
         IGrainFactory grainFactory,
         IOptions<GuildConfig> guildConfig,
+        IWordFilter wordFilter,
         ILogger<IGuildGrain> logger
     )
     {
         _dbCtxFactory = dbCtxFactory;
         _grainFactory = grainFactory;
         _guildConfig = guildConfig.Value;
+        _wordFilter = wordFilter;
         _logger = logger;
 
         _state = new() { GuildId = this.GetGuildId() };
@@ -186,7 +190,8 @@ internal sealed partial class GuildGrain : Grain, IGuildGrain
 
         var editorData = await _grainFactory.GetGuildDirectoryGrain().GetEditorDataAsync(ct);
 
-        // No group has a forum until the forum ship lands.
-        _state.Guild = entity.ToSnapshot(editorData, hasForum: false);
+        var hasForum = await dbCtx.GuildForums.AnyAsync(x => x.GuildEntityId == GuildId.Value, ct);
+
+        _state.Guild = entity.ToSnapshot(editorData, hasForum);
     }
 }

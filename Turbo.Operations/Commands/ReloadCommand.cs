@@ -7,6 +7,7 @@ using Turbo.Primitives.Catalog.Providers;
 using Turbo.Primitives.Catalog.Tags;
 using Turbo.Primitives.Commands;
 using Turbo.Primitives.Furniture.Providers;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Navigator;
 using Turbo.Primitives.Pets.Providers;
 using Turbo.Primitives.Players.Permissions;
@@ -28,6 +29,8 @@ public enum ReloadSubject
     PetBreeds,
     Achievements,
     Plugins,
+    Filter,
+    PetSpeech,
 }
 
 public sealed record ReloadArguments(ReloadSubject Subject);
@@ -40,7 +43,7 @@ public sealed record ReloadArguments(ReloadSubject Subject);
 /// </summary>
 [Command(
     "reload",
-    Description = "Read the catalog, texts, furniture and the like from the database again",
+    Description = "Read the catalog, texts, furniture, filter words and the like from the database again",
     Category = CommandCategories.ADMINISTRATION
 )]
 [RequiresPermission(PermissionNodes.Command.RELOAD)]
@@ -54,7 +57,9 @@ public sealed class ReloadCommand(
     IChatStyleProvider chatStyleProvider,
     IRoomModelProvider roomModelProvider,
     IPetBreedProvider petBreedProvider,
+    IPetSpeechProvider petSpeechProvider,
     IAchievementCatalog achievements,
+    IWordFilter wordFilter,
     PluginManager pluginManager
 ) : IOperatorCommand<ReloadArguments>
 {
@@ -77,7 +82,8 @@ public sealed class ReloadCommand(
 
                 break;
             case ReloadSubject.Texts:
-                await textProvider.ReloadAsync(ct);
+                // Texts are read from the database as they are asked for; this forgets those read.
+                textProvider.Invalidate();
 
                 break;
             case ReloadSubject.Furni:
@@ -104,12 +110,20 @@ public sealed class ReloadCommand(
                 await petBreedProvider.ReloadAsync(ct);
 
                 break;
+            case ReloadSubject.PetSpeech:
+                await petSpeechProvider.ReloadAsync(ct);
+
+                break;
             case ReloadSubject.Plugins:
                 await pluginManager.LoadAllAsync(true, ct);
 
                 break;
             case ReloadSubject.Achievements:
                 await achievements.ReloadAsync(ct);
+                break;
+            case ReloadSubject.Filter:
+                await wordFilter.ReloadAsync(ct);
+
                 break;
         }
 

@@ -83,8 +83,16 @@ public sealed partial class RoomAvatarModule(RoomGrain roomGrain) : RoomGrainCom
 
         _roomGrain.WakeTick();
 
-        if (arrival is not null)
+        if (arrival is not null && arrivalItem is not null)
+        {
             await arrival.ReceiveArrivalAsync(avatar, ct);
+
+            // Arriving in it is stepping onto it: "user walks on furni" fires for the teleport,
+            // as it does for the other half of a pair in the same room (Wired Faculty tutorial
+            // "Adding a Sandtrap effect to floor hatch teleports", 02/10/2026, which puts its exit
+            // stack in the room the player arrives in).
+            await NotifyWalkOnAsync(avatar, MapModule.ToIdx(arrivalItem.X, arrivalItem.Y), ct);
+        }
 
         // Three grains that answer from what they hold and never call a room, asked side by
         // side: each load only sets its own field on the avatar and logs its own failure.
@@ -261,6 +269,13 @@ public sealed partial class RoomAvatarModule(RoomGrain roomGrain) : RoomGrainCom
             }
 
             player.SetFavouriteGuild(guild.GuildId, GuildMembershipStatus.Member, guild.Name);
+
+            // The client draws a worn group only from a badge code it was sent, and the people
+            // already standing here asked for theirs before this player arrived.
+            await _roomGrain.SendComposerToRoomAsync(
+                new HabboGroupBadgesMessageComposer { Guilds = [guild] },
+                ct
+            );
         }
         catch (Exception ex)
         {
@@ -444,6 +459,24 @@ public sealed partial class RoomAvatarModule(RoomGrain roomGrain) : RoomGrainCom
         return true;
     }
 
+    /// <summary>
+    /// A player's place in the room, null when they are not here. Players only: a bot has no
+    /// player id to ask by. Reads the avatar as it is and never touches it.
+    /// </summary>
+    public RoomAvatarPositionSnapshot? GetPlayerPosition(PlayerId playerId) =>
+        TryGetPlayer(playerId, out var avatar)
+            ? new RoomAvatarPositionSnapshot
+            {
+                RoomId = _roomGrain._state.RoomId,
+                X = avatar.X,
+                Y = avatar.Y,
+                Z = avatar.Z,
+                Rotation = avatar.Rotation,
+                IsIdle = avatar.IsIdle,
+                IsWalking = avatar.IsWalking,
+            }
+            : null;
+
     public async Task<bool> WalkAvatarToAsync(
         ActionContext ctx,
         int targetX,
@@ -452,12 +485,14 @@ public sealed partial class RoomAvatarModule(RoomGrain roomGrain) : RoomGrainCom
     )
     {
         // A player inside a teleporter asks to walk and is refused without stopping the walk
-        // the teleporter itself has them on.
+        // the teleporter itself has them on. A click on a tile there is no way to (furni, a
+        // wall) leaves the walk the player is on alone, as Habbo does: the avatar keeps going
+        // where it was going.
         if (
             ctx.PlayerId <= 0
             || !TryGetPlayer(ctx.PlayerId, out var avatar)
             || avatar.IsTeleporting
-            || !await WalkAvatarToAsync(avatar, targetX, targetY, ct)
+            || !await WalkAvatarToAsync(avatar, targetX, targetY, ct, keepWalkWhenRefused: true)
         )
             return false;
 
@@ -485,19 +520,28 @@ public sealed partial class RoomAvatarModule(RoomGrain roomGrain) : RoomGrainCom
     /// is frozen, already there, or no way leads there. Those are ordinary answers, asked for by
     /// every pet and bot that looks for a tile, so they are guard clauses; they used to be thrown
     /// and caught here, which also hid any real failure of the walk behind the same false.
+    /// <paramref name="keepWalkWhenRefused"/> keeps a walk the avatar is already on when the new
+    /// one is refused (a player's own click), instead of stopping it.
     /// </summary>
     public async Task<bool> WalkAvatarToAsync(
         IRoomAvatar avatar,
         int targetX,
         int targetY,
-        CancellationToken ct
+        CancellationToken ct,
+        bool keepWalkWhenRefused = false
     )
     {
         try
         {
             if (!TryStartWalk(avatar, targetX, targetY))
             {
+                if (keepWalkWhenRefused && avatar.IsWalking)
+                    return false;
+
                 await StopWalkingAsync(avatar, ct);
+                // Stopping clears the goal only of an avatar that was walking; a refused walk
+                // from standing still must not leave its goal behind either.
+                avatar.SetGoalTileId(-1);
 
                 return false;
             }
@@ -529,17 +573,49 @@ public sealed partial class RoomAvatarModule(RoomGrain roomGrain) : RoomGrainCom
             return false;
 
         var map = MapModule;
-        var goalTileId = map.ToIdx(targetX, targetY);
-        var currentTileId =
-            avatar.NextTileId > 0 ? avatar.NextTileId : map.ToIdx(avatar.X, avatar.Y);
-
-        if (goalTileId == currentTileId || !avatar.SetGoalTileId(goalTileId))
-            return false;
 
         // A goal off the map is refused by coordinate: its index can land on a real tile of the
         // next row, which the search would then happily walk to.
-        return map.InBounds(targetX, targetY)
-            && PathingSystem.TryFindPath(avatar, currentTileId, goalTileId, avatar.TilePath);
+        if (!map.InBounds(targetX, targetY))
+            return false;
+
+        var goalTileId = map.ToIdx(targetX, targetY);
+        var currentTileId = CurrentTileId(avatar);
+
+        if (goalTileId == currentTileId)
+            return false;
+
+        // The goal changes only with a way to it: the search writes the path only when it finds
+        // one, so a refused goal leaves the walk the avatar is on whole.
+        if (!PathingSystem.TryFindPath(avatar, currentTileId, goalTileId, avatar.TilePath))
+            return false;
+
+        avatar.SetGoalTileId(goalTileId);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Where a walk is planned from: the tile the avatar is stepping onto, or the one it stands
+    /// on. <c>NextTileId</c> is -1 for none; tile 0, the map's corner, is a tile like any other.
+    /// </summary>
+    private int CurrentTileId(IRoomAvatar avatar) =>
+        avatar.NextTileId >= 0 ? avatar.NextTileId : MapModule.ToIdx(avatar.X, avatar.Y);
+
+    /// <summary>
+    /// Finds a new way to the walk's goal when a step on the way was blocked: someone stepped
+    /// in front, or furni was put down. Each walk gets a few of these, so an avatar boxed in
+    /// stops instead of re-planning every tick. False when the walk should stop.
+    /// </summary>
+    internal bool TryRerouteWalk(IRoomAvatar avatar)
+    {
+        if (avatar.IsFrozen || !avatar.TryRerouteGoal())
+            return false;
+
+        var currentTileId = CurrentTileId(avatar);
+
+        return avatar.GoalTileId != currentTileId
+            && PathingSystem.TryFindPath(avatar, currentTileId, avatar.GoalTileId, avatar.TilePath);
     }
 
     /// <summary>
@@ -608,12 +684,17 @@ public sealed partial class RoomAvatarModule(RoomGrain roomGrain) : RoomGrainCom
             if (prevTileId == nextTileId)
                 return;
 
+            var fromX = avatar.X;
+            var fromY = avatar.Y;
+
             MapModule.RemoveAvatar(avatar, false);
 
             avatar.SetPosition(nextX, nextY);
 
             MapModule.AddAvatar(avatar, false);
             MapModule.UpdateHeightForAvatar(avatar);
+
+            await PublishMovedAsync(avatar, fromX, fromY, ct);
         }
         catch (Exception ex)
         {
@@ -664,11 +745,14 @@ public sealed partial class RoomAvatarModule(RoomGrain roomGrain) : RoomGrainCom
             await NotifyWalkOffAsync(avatar, sourceIdx, ct);
 
         var (targetX, targetY) = map.GetTileXY(tileIdx);
+        var (fromX, fromY) = (avatar.X, avatar.Y);
 
         map.RemoveAvatarAtIdx(avatar, sourceIdx, false);
         avatar.SetPosition(targetX, targetY);
         map.AddAvatarAtIdx(avatar, tileIdx, false);
         map.UpdateHeightForAvatar(avatar);
+
+        await PublishMovedAsync(avatar, fromX, fromY, ct);
 
         avatar.RemoveStatus(AvatarStatusType.Move);
         avatar.NeedsInvoke = true;
@@ -772,6 +856,46 @@ public sealed partial class RoomAvatarModule(RoomGrain roomGrain) : RoomGrainCom
         return Task.FromResult(true);
     }
 
+    /// <summary>
+    /// A player's own effect, put on only over nothing or over another effect they own. The
+    /// hotel puts effects on avatars too (riding, a game team, a freeze) and none of them keeps
+    /// what was worn, so an inventory effect must not overwrite one.
+    /// </summary>
+    public async Task<bool> SetPlayerEffectAsync(
+        RoomObjectId objectId,
+        int effectId,
+        ImmutableArray<int> ownedEffectIds,
+        CancellationToken ct
+    )
+    {
+        if (objectId <= 0 || effectId <= 0 || !TryGetAvatar(objectId, out var avatar))
+            return false;
+
+        if (avatar.EffectId == effectId)
+            return true;
+
+        if (avatar.EffectId != 0 && !ownedEffectIds.Contains(avatar.EffectId))
+            return false;
+
+        return await SetAvatarEffectAsync(objectId, effectId, ct);
+    }
+
+    /// <summary>Takes an effect off, but only if the avatar wears one of the given ones.</summary>
+    public async Task<bool> ClearPlayerEffectIfAsync(
+        RoomObjectId objectId,
+        ImmutableArray<int> ownedEffectIds,
+        CancellationToken ct
+    )
+    {
+        if (objectId <= 0 || !TryGetAvatar(objectId, out var avatar))
+            return false;
+
+        if (avatar.EffectId <= 0 || !ownedEffectIds.Contains(avatar.EffectId))
+            return false;
+
+        return await SetAvatarEffectAsync(objectId, 0, ct);
+    }
+
     public Task<bool> SetAvatarExpressionAsync(
         RoomObjectId objectId,
         AvatarExpressionType expressionType,
@@ -780,6 +904,24 @@ public sealed partial class RoomAvatarModule(RoomGrain roomGrain) : RoomGrainCom
     {
         if (objectId <= 0 || !TryGetAvatar(objectId, out var avatar))
             return Task.FromResult(false);
+
+        // The idle expression is a request to sleep: the room sees a sleep update, not an expression.
+        if (expressionType == AvatarExpressionType.Idle)
+        {
+            if (!avatar.IsIdle)
+            {
+                avatar.SetIdle(true);
+                PublishIdleChanged(avatar);
+
+                _roomGrain.SendComposerToRoomAndForget(
+                    new SleepMessageComposer { ObjectId = avatar.ObjectId, IsSleeping = true }
+                );
+            }
+
+            PublishAction(avatar, AvatarActionType.Expression, (int)expressionType);
+
+            return Task.FromResult(true);
+        }
 
         _roomGrain.SendComposerToRoomAndForget(
             new ExpressionMessageComposer
@@ -842,7 +984,66 @@ public sealed partial class RoomAvatarModule(RoomGrain roomGrain) : RoomGrainCom
         _roomGrain.SendComposerToRoomAndForget(
             new SleepMessageComposer { ObjectId = avatar.ObjectId, IsSleeping = false }
         );
+
+        PublishIdleChanged(avatar);
     }
+
+    /// <summary>
+    /// Tells registered listeners an avatar fell asleep or woke up. Called once per transition,
+    /// by the code that flips the flag. Queued, so it never blocks the caller.
+    /// </summary>
+    public void PublishIdleChanged(IRoomAvatar avatar)
+    {
+        if (!EventModule.HasRegisteredListeners)
+            return;
+
+        EventModule
+            .PublishToRegisteredAsync(
+                new AvatarIdleChangedEvent
+                {
+                    RoomId = _roomGrain.RoomId,
+                    CausedBy = CausedByAvatar(avatar),
+                    ObjectId = avatar.ObjectId,
+                    IsIdle = avatar.IsIdle,
+                },
+                CancellationToken.None
+            )
+            .LogAndForget(
+                _roomGrain._logger,
+                "publish an idle change in room {RoomId}",
+                _roomGrain.RoomId
+            );
+    }
+
+    /// <summary>
+    /// Tells registered listeners an avatar left the tile (<paramref name="fromX"/>,
+    /// <paramref name="fromY"/>) for where it stands now. Nothing is published when it did not
+    /// change tile, so a caller may ask after every position update.
+    /// </summary>
+    public Task PublishMovedAsync(IRoomAvatar avatar, int fromX, int fromY, CancellationToken ct)
+    {
+        if (!EventModule.HasRegisteredListeners || (avatar.X == fromX && avatar.Y == fromY))
+            return Task.CompletedTask;
+
+        return EventModule.PublishToRegisteredAsync(
+            new AvatarMovedEvent
+            {
+                RoomId = _roomGrain.RoomId,
+                CausedBy = CausedByAvatar(avatar),
+                ObjectId = avatar.ObjectId,
+                FromX = fromX,
+                FromY = fromY,
+                ToX = avatar.X,
+                ToY = avatar.Y,
+            },
+            ct
+        );
+    }
+
+    private ActionContext CausedByAvatar(IRoomAvatar avatar) =>
+        avatar is IRoomPlayer player
+            ? ActionContext.CreateForPlayer(player.PlayerId, _roomGrain.RoomId)
+            : ActionContext.CreateForSystem(_roomGrain.RoomId);
 
     public Task SetHandItemAsync(IRoomAvatar avatar, int handItemId, CancellationToken ct)
     {
@@ -945,9 +1146,7 @@ public sealed partial class RoomAvatarModule(RoomGrain roomGrain) : RoomGrainCom
                 new AvatarPerformsActionEvent
                 {
                     RoomId = _roomGrain.RoomId,
-                    CausedBy = avatar is IRoomPlayer player
-                        ? ActionContext.CreateForPlayer(player.PlayerId, _roomGrain.RoomId)
-                        : ActionContext.CreateForSystem(_roomGrain.RoomId),
+                    CausedBy = CausedByAvatar(avatar),
                     ObjectId = avatar.ObjectId,
                     ActionType = actionType,
                     Value = value,

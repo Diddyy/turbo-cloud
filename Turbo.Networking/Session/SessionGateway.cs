@@ -5,18 +5,24 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans;
+using Turbo.Events;
 using Turbo.Primitives.Messages.Outgoing.Handshake;
 using Turbo.Primitives.Networking;
 using Turbo.Primitives.Orleans;
 using Turbo.Primitives.Orleans.Observers;
 using Turbo.Primitives.Players;
+using Turbo.Primitives.Players.Events;
 
 namespace Turbo.Networking.Session;
 
-public sealed class SessionGateway(IGrainFactory grainFactory, ILogger<ISessionGateway> logger)
-    : ISessionGateway
+public sealed class SessionGateway(
+    IGrainFactory grainFactory,
+    EventSystem eventSystem,
+    ILogger<ISessionGateway> logger
+) : ISessionGateway
 {
     private readonly IGrainFactory _grainFactory = grainFactory;
+    private readonly EventSystem _eventSystem = eventSystem;
     private readonly ILogger<ISessionGateway> _logger = logger;
 
     private readonly ConcurrentDictionary<SessionKey, ISessionContext> _sessions = new();
@@ -64,8 +70,11 @@ public sealed class SessionGateway(IGrainFactory grainFactory, ILogger<ISessionG
     {
         if (_sessionToPlayer.TryRemove(key, out var playerId))
         {
-            // Remove only this binding: a reconnect may already have replaced it.
-            _playerToSession.TryRemove(new KeyValuePair<PlayerId, SessionKey>(playerId, key));
+            // Remove only this binding: a reconnect may already have replaced it, and then the
+            // player is still online.
+            if (_playerToSession.TryRemove(new KeyValuePair<PlayerId, SessionKey>(playerId, key)))
+                AnnounceOnline(playerId, false);
+
             await _grainFactory
                 .GetPlayerPresenceGrain(playerId)
                 .UnregisterSessionObserverAsync(key, ct)
@@ -98,6 +107,20 @@ public sealed class SessionGateway(IGrainFactory grainFactory, ILogger<ISessionG
         if (observer is null)
             return;
 
+        // A connection is one player's for its life. Binding it to another would leave the first
+        // bound to it with no way out: online for good, and sent the second player's composers.
+        if (_sessionToPlayer.TryGetValue(key, out var bound) && bound != playerId)
+        {
+            _logger.LogWarning(
+                "Session {SessionKey} of player {PlayerId} asked to log in as player {OtherPlayerId}; refused",
+                key,
+                bound,
+                playerId
+            );
+
+            return;
+        }
+
         var playerPresence = _grainFactory.GetPlayerPresenceGrain(playerId);
 
         _sessionToPlayer[key] = playerId;
@@ -119,6 +142,9 @@ public sealed class SessionGateway(IGrainFactory grainFactory, ILogger<ISessionG
         await playerPresence
             .RegisterSessionObserverAsync(key, observer, CancellationToken.None)
             .ConfigureAwait(false);
+
+        if (previousKey == SessionKey.Invalid)
+            AnnounceOnline(playerId, true);
 
         if (previousKey != SessionKey.Invalid && previousKey != key)
         {
@@ -148,7 +174,22 @@ public sealed class SessionGateway(IGrainFactory grainFactory, ILogger<ISessionG
                     );
                 }
 
-                await previousSession.CloseSessionAsync().ConfigureAwait(false);
+                // The old connection may already be dropping, and closing it then throws. The
+                // replacement is bound either way and its login must not fail over it.
+                try
+                {
+                    await previousSession
+                        .CloseSessionAsync("replaced by a new login")
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Failed to close replaced session {SessionKey}",
+                        previousKey
+                    );
+                }
             }
         }
     }
@@ -184,7 +225,7 @@ public sealed class SessionGateway(IGrainFactory grainFactory, ILogger<ISessionG
             }
         }
 
-        await session.CloseSessionAsync().ConfigureAwait(false);
+        await session.CloseSessionAsync("disconnected by the server").ConfigureAwait(false);
 
         return true;
     }
@@ -195,9 +236,18 @@ public sealed class SessionGateway(IGrainFactory grainFactory, ILogger<ISessionG
             return;
 
         _sessionToPlayer.TryRemove(sessionKey, out _);
+        AnnounceOnline(playerId, false);
 
         var playerPresence = _grainFactory.GetPlayerPresenceGrain(playerId);
 
         await playerPresence.UnregisterSessionObserverAsync(sessionKey, ct).ConfigureAwait(false);
     }
+
+    private void AnnounceOnline(PlayerId playerId, bool online) =>
+        _eventSystem
+            .PublishAsync(
+                new PlayerOnlineChangedEvent { PlayerId = playerId, Online = online },
+                CancellationToken.None
+            )
+            .LogAndForget(_logger, "announce that player {PlayerId} came or went", playerId);
 }

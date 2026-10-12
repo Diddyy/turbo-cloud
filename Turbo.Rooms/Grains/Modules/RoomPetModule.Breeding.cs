@@ -158,7 +158,12 @@ public sealed partial class RoomPetModule
             return false;
         }
 
-        var status = PetNames.Validate(name, Config.NameMinLength, Config.NameMaxLength);
+        var status = PetNames.Validate(
+            name,
+            Config.NameMinLength,
+            Config.NameMaxLength,
+            _roomGrain._wordFilter
+        );
 
         if (status != PetNameValidationType.Ok)
         {
@@ -184,6 +189,7 @@ public sealed partial class RoomPetModule
                 offspringPalette.BreedId,
                 Chance(50) ? pet1.PetFigure.Color : pet2.PetFigure.Color,
                 offspringPalette.RarityLevel,
+                [],
                 ct
             );
         var rarityLevel = offspringPalette.RarityLevel;

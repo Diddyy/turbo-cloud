@@ -12,6 +12,7 @@ using Turbo.Primitives.Rooms.Object;
 using Turbo.Primitives.Rooms.Providers;
 using Turbo.Primitives.Rooms.Snapshots;
 using Turbo.Primitives.Rooms.Snapshots.Mapping;
+using Turbo.Rooms;
 using Turbo.Rooms.Configuration;
 using Turbo.Rooms.Grains;
 
@@ -35,9 +36,18 @@ public sealed class LiveRoomHarness
     public object State { get; }
     public IServiceProvider Services { get; }
     public IRoomObjectLogicProvider LogicProvider { get; }
+
+    /// <summary>The registry a room publishes to besides its own systems, where a plugin's listeners go.</summary>
+    public IRoomEventListenerRegistry EventListeners { get; } = new RoomEventListenerRegistry();
+
     private readonly RoomConfig _roomConfig;
 
-    public LiveRoomHarness(int width = 10, int height = 10, RoomConfig? roomConfig = null)
+    public LiveRoomHarness(
+        int width = 10,
+        int height = 10,
+        RoomConfig? roomConfig = null,
+        Altitude[]? heights = null
+    )
     {
         _roomConfig = roomConfig ?? new RoomConfig();
         Fakes.Handlers["GetService"] = call =>
@@ -45,6 +55,15 @@ public sealed class LiveRoomHarness
         Fakes.Handlers["get_GrainId"] = _ =>
             GrainId.Create(GrainType.Create("room"), GrainIdKeyExtensions.CreateIntegerKey(1));
         Fakes.Handlers["GetPlayerNameAsync"] = _ => Task.FromResult<string?>("test");
+        // A denied node is looked up in the registry, as in the hotel: the room asks it of
+        // every player, its owner included (room.control.any decides their level).
+        var permissions = new Turbo.Primitives.Players.Permissions.PermissionRegistry([
+            new Turbo.Primitives.Players.Permissions.CorePermissionNodeSource(),
+        ]);
+        Fakes.Handlers["get_Current"] = call =>
+            call.Interface == typeof(Turbo.Primitives.Players.Providers.IPermissionRegistryProvider)
+                ? permissions
+                : Fakes.NotHandled;
 
         Services = BuildServices();
         LogicProvider = (IRoomObjectLogicProvider)
@@ -104,7 +123,7 @@ public sealed class LiveRoomHarness
                 Width = width,
                 Height = height,
                 Size = size,
-                BaseHeights = new Altitude[size],
+                BaseHeights = heights ?? new Altitude[size],
                 BaseFlags = Enumerable.Repeat(RoomTileFlags.Open, size).ToArray(),
             }
         );
@@ -165,6 +184,8 @@ public sealed class LiveRoomHarness
     {
         if (t == typeof(IRoomObjectLogicProvider))
             return LogicProvider;
+        if (t == typeof(IRoomEventListenerRegistry))
+            return EventListeners;
         if (
             t.IsGenericType
             && t.GetGenericTypeDefinition().FullName == "Microsoft.Extensions.Options.IOptions`1"

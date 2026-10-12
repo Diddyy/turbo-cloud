@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Immutable;
 using Orleans;
 using Turbo.Primitives.Achievements.Enums;
@@ -25,12 +26,7 @@ public sealed record AchievementDefinition
     [Id(5)]
     public int Order { get; init; }
 
-    [Id(6)]
-    public bool Enabled { get; init; } = true;
-
-    [Id(7)]
-    public bool Archived { get; init; }
-
+    // Ids 6 and 7 were the Enabled and Archived flags, replaced by State. Never reuse them.
     [Id(8)]
     public int DisplayMethod { get; init; }
 
@@ -48,4 +44,26 @@ public sealed record AchievementDefinition
 
     [Id(13)]
     public required ImmutableArray<AchievementLevelDefinition> Levels { get; init; }
+
+    /// <summary>Whether the achievement accrues progress and who is shown it. See <see cref="AchievementState"/>.</summary>
+    [Id(14)]
+    public AchievementState State { get; init; } = AchievementState.Enabled;
+
+    /// <summary>
+    /// First instant (UTC, inclusive) an enabled achievement accrues. Before it the achievement is
+    /// hidden, so a seasonal one does not sit in the list for months with nothing to do.
+    /// </summary>
+    [Id(15)]
+    public DateTime? ActiveFromUtc { get; init; }
+
+    /// <summary>
+    /// First instant (UTC, exclusive) an enabled achievement stops accruing. After it the
+    /// achievement is archived: kept by those who progressed it, hidden from everyone else.
+    /// </summary>
+    [Id(16)]
+    public DateTime? ActiveUntilUtc { get; init; }
+
+    /// <summary>Optional narrowing of the facts this achievement counts. See <see cref="AchievementMatch"/>.</summary>
+    [Id(17)]
+    public AchievementMatch? Match { get; init; }
 }

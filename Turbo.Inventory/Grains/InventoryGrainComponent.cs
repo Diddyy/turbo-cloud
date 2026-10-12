@@ -4,6 +4,7 @@ using Orleans;
 using Turbo.Inventory.Configuration;
 using Turbo.Inventory.Grains.Modules;
 using Turbo.Primitives.Inventory.Grains;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Players;
 using Turbo.Primitives.Players.Grains;
 
@@ -26,6 +27,7 @@ internal abstract class InventoryGrainComponent(InventoryGrain inventoryGrain)
 
     protected PlayerId PlayerId => _inventoryGrain.PlayerId;
     protected InventoryConfig Config => _inventoryGrain._inventoryConfig;
+    protected IWordFilter WordFilter => _inventoryGrain._wordFilter;
 
     protected IGrainFactory GrainFactory => _inventoryGrain._grainFactory;
     protected IPlayerPresenceGrain Presence => _inventoryGrain.Presence;

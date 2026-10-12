@@ -9,6 +9,7 @@ using Turbo.Database.Context;
 using Turbo.Database.Entities.Room;
 using Turbo.Primitives.Action;
 using Turbo.Primitives.Messages.Outgoing.Roomsettings;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Navigator.Enums;
 using Turbo.Primitives.Orleans;
 using Turbo.Primitives.Players;
@@ -547,29 +548,11 @@ public sealed class RoomModerationModule(
         return true;
     }
 
-    /// <summary>Replaces each filtered word in the text; whole words only, case-insensitive.</summary>
-    public string ApplyFilter(string text)
-    {
-        var words = _roomGrain._state.FilterWords;
-
-        if (words.Count == 0 || text.Length == 0)
-            return text;
-
-        var replacement = _roomGrain._roomConfig.RoomFilterReplacement;
-        var parts = text.Split(' ');
-        var changed = false;
-
-        for (var i = 0; i < parts.Length; i++)
-        {
-            if (!words.Contains(parts[i]))
-                continue;
-
-            parts[i] = replacement;
-            changed = true;
-        }
-
-        return changed ? string.Join(' ', parts) : text;
-    }
+    /// <summary>
+    /// The text with the hotel's filtered words and this room's replaced (<see cref="FilterWords"/>).
+    /// </summary>
+    public string ApplyFilter(string text) =>
+        _roomGrain._wordFilter.Filter(text, _roomGrain._state.FilterWords);
 
     internal async Task EnsureFilterLoadedAsync(CancellationToken ct)
     {

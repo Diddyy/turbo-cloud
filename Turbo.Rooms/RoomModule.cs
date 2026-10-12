@@ -23,20 +23,21 @@ public sealed class RoomModule : IHostPluginModule
         services.Configure<PetConfig>(builder.Configuration.GetSection(PetConfig.SECTION_NAME));
         services.Configure<BotConfig>(builder.Configuration.GetSection(BotConfig.SECTION_NAME));
         services.Configure<WiredConfig>(builder.Configuration.GetSection(WiredConfig.SECTION_NAME));
-        services.Configure<HotelTextConfig>(
-            builder.Configuration.GetSection(HotelTextConfig.SECTION_NAME)
+        services.Configure<WiredChestConfig>(
+            builder.Configuration.GetSection(WiredChestConfig.SECTION_NAME)
         );
-
-        services.AddSingleton<IHotelTextProvider, HotelTextProvider>();
         services.AddSingleton<IRoomAvatarProvider, RoomAvatarProvider>();
         services.AddSingleton<IRoomItemsProvider, RoomItemsProvider>();
         services.AddSingleton<IRoomNpcProvider, RoomNpcProvider>();
         services.AddSingleton<IRoomModelProvider, RoomModelProvider>();
         services.AddSingleton<IRoomObjectLogicProvider, RoomObjectLogicProvider>();
+        services.AddSingleton<IRoomEventListenerRegistry, RoomEventListenerRegistry>();
         services.AddSingleton<IRoomWiredVariablesProvider, RoomWiredVariablesProvider>();
         services.AddSingleton<IPetBreedProvider, PetBreedProvider>();
+        services.AddSingleton<IPetSpeechProvider, PetSpeechProvider>();
 
         services.AddSingleton<IAssemblyFeatureProcessor, RoomObjectLogicFeatureProcessor>();
+        services.AddSingleton<IAssemblyFeatureProcessor, RoomEventListenerFeatureProcessor>();
         services.AddSingleton<IAssemblyFeatureProcessor, WiredVariableFeatureProcessor>();
 
         services.AddSingleton<IRoomService, RoomService>();

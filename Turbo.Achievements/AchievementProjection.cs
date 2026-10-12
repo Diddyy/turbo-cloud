@@ -10,7 +10,8 @@ public static class AchievementProjection
 {
     public static AchievementSnapshot ToSnapshot(
         AchievementDefinition definition,
-        AchievementProgressEntity? progress
+        AchievementProgressEntity? progress,
+        DateTime nowUtc
     )
     {
         ArgumentNullException.ThrowIfNull(definition);
@@ -45,10 +46,7 @@ public static class AchievementProjection
             SubCategory = definition.SubCategory,
             LevelCount = definition.Levels.Length,
             DisplayMethod = definition.DisplayMethod,
-            State =
-                definition.Archived ? Turbo.Primitives.Achievements.Enums.AchievementState.Archived
-                : definition.Enabled ? Turbo.Primitives.Achievements.Enums.AchievementState.Enabled
-                : Turbo.Primitives.Achievements.Enums.AchievementState.Disabled,
+            State = definition.EffectiveState(nowUtc),
         };
     }
 }

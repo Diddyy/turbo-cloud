@@ -2,7 +2,9 @@ using System.Collections.Immutable;
 using System.Threading;
 using System.Threading.Tasks;
 using Turbo.Primitives.Messages.Outgoing.Inventory.Pets;
+using Turbo.Primitives.Messages.Outgoing.Users;
 using Turbo.Primitives.Networking;
+using Turbo.Primitives.Orleans;
 using Turbo.Primitives.Pets.Snapshots;
 using Turbo.Primitives.Rooms;
 
@@ -29,11 +31,33 @@ internal sealed partial class InventoryGrain
         int breedId,
         string color,
         int rarityLevel,
+        ImmutableArray<int> customParts,
         CancellationToken ct
-    ) => PetModule.CreateAsync(name, typeId, paletteId, breedId, color, rarityLevel, ct);
+    ) =>
+        PetModule.CreateAsync(
+            name,
+            typeId,
+            paletteId,
+            breedId,
+            color,
+            rarityLevel,
+            customParts,
+            ct
+        );
 
     public Task<bool> DeletePetAsync(int petId, CancellationToken ct) =>
         PetModule.DeleteAsync(petId, ct);
+
+    public Task SendPetNameApprovalAsync(string name, CancellationToken ct)
+    {
+        var (result, info) = PetModule.ApproveName(name);
+
+        return _grainFactory.SendComposerToPlayerAsync(
+            PlayerId,
+            new ApproveNameMessageComposer { Result = result, NameValidationInfo = info },
+            ct
+        );
+    }
 
     public async Task SendPetInventoryAsync(CancellationToken ct) =>
         await Presence.SendComposerAsync(

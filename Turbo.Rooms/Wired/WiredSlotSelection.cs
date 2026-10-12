@@ -31,6 +31,9 @@ public static class WiredSlotSelection
                         slot == 0 ? box.GetStuffIds() : box.GetStuffIds2()
                     );
                     break;
+                case WiredFurniSourceType.SecondaryItems:
+                    set.SelectedFurniIds.UnionWith(box.GetStuffIds2());
+                    break;
                 case WiredFurniSourceType.SelectorItems:
                     set.SelectedFurniIds.UnionWith(ctx.SelectorPool.SelectedFurniIds);
                     break;
@@ -39,6 +42,41 @@ public static class WiredSlotSelection
                     break;
                 case WiredFurniSourceType.AllRoomItems:
                     set.UnionWith(ctx.GetSelection(box));
+                    break;
+            }
+        }
+
+        return set;
+    }
+
+    /// <summary>
+    /// The users of one user input slot on its own, for boxes whose second user slot means
+    /// something else than the first (a variable reference beside the users to reward).
+    /// </summary>
+    public static IWiredSelectionSet ForUserSlot(IWiredBox box, IWiredContext ctx, int slot)
+    {
+        var set = new WiredSelectionSet();
+        var playerSources = box.GetPlayerSources();
+
+        if (slot >= playerSources.Count)
+            return set;
+
+        foreach (var sourceType in playerSources[slot])
+        {
+            switch (sourceType)
+            {
+                case WiredPlayerSourceType.TriggeredUser:
+                case WiredPlayerSourceType.ReachedUser:
+                    set.SelectedAvatarIds.UnionWith(ctx.Selected.SelectedAvatarIds);
+                    break;
+                case WiredPlayerSourceType.ClickedUser:
+                    set.SelectedAvatarIds.UnionWith(ctx.EventTargets.SelectedAvatarIds);
+                    break;
+                case WiredPlayerSourceType.SelectorUsers:
+                    set.SelectedAvatarIds.UnionWith(ctx.SelectorPool.SelectedAvatarIds);
+                    break;
+                case WiredPlayerSourceType.SignalUsers:
+                    set.SelectedAvatarIds.UnionWith(ctx.Signal.SelectedAvatarIds);
                     break;
             }
         }

@@ -5,10 +5,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans;
+using Turbo.Primitives.Admin.Grains;
 using Turbo.Primitives.Badges.Grains;
 using Turbo.Primitives.Catalog.Grains;
 using Turbo.Primitives.Guilds;
 using Turbo.Primitives.Guilds.Grains;
+using Turbo.Primitives.Hotel.Grains;
 using Turbo.Primitives.Inventory.Grains;
 using Turbo.Primitives.Networking;
 using Turbo.Primitives.Players;
@@ -23,10 +25,14 @@ using Turbo.Primitives.Players.Grains.Subscriptions;
 using Turbo.Primitives.Players.Grains.Wardrobe;
 using Turbo.Primitives.Players.Permissions;
 using Turbo.Primitives.Players.Wallet;
+using Turbo.Primitives.Quests.Grains;
 using Turbo.Primitives.Rooms;
 using Turbo.Primitives.Rooms.Enums;
 using Turbo.Primitives.Rooms.Grains;
+using Turbo.Primitives.Rooms.Object;
 using Turbo.Primitives.Rooms.Snapshots;
+using Turbo.Primitives.Sound.Grains;
+using Turbo.Primitives.WiredTrading.Grains;
 
 namespace Turbo.Primitives.Orleans;
 
@@ -42,6 +48,29 @@ public static class GrainFactoryExtensions
 
     public static IRoomTradeGrain GetRoomTradeGrain(this IGrainFactory factory, RoomId roomId) =>
         factory.GetGrain<IRoomTradeGrain>((long)roomId.Value);
+
+    public static IWiredChestGrain GetWiredChestGrain(
+        this IGrainFactory factory,
+        RoomObjectId chestId
+    ) => factory.GetGrain<IWiredChestGrain>((long)chestId.Value);
+
+    public static IJukeboxGrain GetJukeboxGrain(
+        this IGrainFactory factory,
+        RoomObjectId jukeboxId
+    ) => factory.GetGrain<IJukeboxGrain>((long)jukeboxId.Value);
+
+    public static ISongDirectoryGrain GetSongDirectoryGrain(this IGrainFactory factory) =>
+        factory.GetGrain<ISongDirectoryGrain>(SingletonGrainId.GLOBAL);
+
+    public static IWiredTransactionLogGrain GetWiredTransactionLogGrain(
+        this IGrainFactory factory,
+        RoomId roomId
+    ) => factory.GetGrain<IWiredTransactionLogGrain>((long)roomId.Value);
+
+    public static IWiredTradeGrain GetWiredTradeGrain(
+        this IGrainFactory factory,
+        PlayerId playerId
+    ) => factory.GetGrain<IWiredTradeGrain>(playerId.Value);
 
     public static IRoomDirectoryGrain GetRoomDirectoryGrain(this IGrainFactory factory) =>
         factory.GetGrain<IRoomDirectoryGrain>(SingletonGrainId.GLOBAL);
@@ -84,6 +113,14 @@ public static class GrainFactoryExtensions
         this IGrainFactory factory,
         PlayerId playerId
     ) => factory.GetGrain<IPlayerPresenceGrain>(playerId.Value);
+
+    public static IAdminAuthGrain GetAdminAuthGrain(this IGrainFactory factory) =>
+        factory.GetGrain<IAdminAuthGrain>(SingletonGrainId.GLOBAL);
+
+    public static IAdminAccountGrain GetAdminAccountGrain(
+        this IGrainFactory factory,
+        PlayerId playerId
+    ) => factory.GetGrain<IAdminAccountGrain>(playerId.Value);
 
     public static IPlayerDirectoryGrain GetPlayerDirectoryGrain(this IGrainFactory factory) =>
         factory.GetGrain<IPlayerDirectoryGrain>(SingletonGrainId.GLOBAL);
@@ -137,6 +174,16 @@ public static class GrainFactoryExtensions
     public static IGuildGrain GetGuildGrain(this IGrainFactory factory, GuildId guildId) =>
         factory.GetGrain<IGuildGrain>((long)guildId.Value);
 
+    public static IGuildForumGrain GetGuildForumGrain(
+        this IGrainFactory factory,
+        GuildId guildId
+    ) => factory.GetGrain<IGuildForumGrain>(guildId.Value);
+
+    public static IPlayerGuildForumGrain GetPlayerGuildForumGrain(
+        this IGrainFactory factory,
+        PlayerId playerId
+    ) => factory.GetGrain<IPlayerGuildForumGrain>(playerId.Value);
+
     public static IPlayerGuildGrain GetPlayerGuildGrain(
         this IGrainFactory factory,
         PlayerId playerId
@@ -151,6 +198,11 @@ public static class GrainFactoryExtensions
         this IGrainFactory factory,
         PlayerId playerId
     ) => factory.GetGrain<IPlayerBadgeGrain>(playerId.Value);
+
+    public static IPlayerEffectGrain GetPlayerEffectGrain(
+        this IGrainFactory factory,
+        PlayerId playerId
+    ) => factory.GetGrain<IPlayerEffectGrain>(playerId.Value);
 
     public static IBadgeLeaderboardGrain GetBadgeLeaderboardGrain(this IGrainFactory factory) =>
         factory.GetGrain<IBadgeLeaderboardGrain>(SingletonGrainId.GLOBAL);
@@ -173,6 +225,9 @@ public static class GrainFactoryExtensions
     public static IBuildersClubGrain GetBuildersClubGrain(this IGrainFactory factory) =>
         factory.GetGrain<IBuildersClubGrain>(SingletonGrainId.GLOBAL);
 
+    public static IWelcomeMessageGrain GetWelcomeMessageGrain(this IGrainFactory factory) =>
+        factory.GetGrain<IWelcomeMessageGrain>(SingletonGrainId.GLOBAL);
+
     public static ICatalogLtdRaffleGrain GetLtdRaffleGrain(
         this IGrainFactory factory,
         int ltdSeriesId
@@ -187,6 +242,21 @@ public static class GrainFactoryExtensions
         this IGrainFactory factory,
         PlayerId playerId
     ) => factory.GetGrain<IPlayerWardrobeGrain>(playerId.Value);
+
+    public static IPlayerDailyTaskGrain GetPlayerDailyTaskGrain(
+        this IGrainFactory factory,
+        PlayerId playerId
+    ) => factory.GetGrain<IPlayerDailyTaskGrain>(playerId.Value);
+
+    public static IPlayerRewardTrackGrain GetPlayerRewardTrackGrain(
+        this IGrainFactory factory,
+        PlayerId playerId
+    ) => factory.GetGrain<IPlayerRewardTrackGrain>(playerId.Value);
+
+    public static IPlayerQuestGrain GetPlayerQuestGrain(
+        this IGrainFactory factory,
+        PlayerId playerId
+    ) => factory.GetGrain<IPlayerQuestGrain>(playerId.Value);
 
     public static IPlayerSettingsGrain GetPlayerSettingsGrain(
         this IGrainFactory factory,

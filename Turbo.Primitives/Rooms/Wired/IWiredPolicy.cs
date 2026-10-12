@@ -16,6 +16,12 @@ public interface IWiredPolicy
     public int ConditionThreshold { get; set; }
     public WiredEffectModeType EffectMode { get; set; }
 
+    /// <summary>
+    /// "Execute In Order": the actions run one by one in stacking order and each variable change
+    /// is its own change. Without it a stack's changes to one holder's variable are combined.
+    /// </summary>
+    public bool ExecuteInOrder { get; set; }
+
     /// <summary>How many actions a random firing picks.</summary>
     public int RandomPickCount { get; set; }
 
@@ -38,6 +44,9 @@ public interface IWiredPolicy
 
     /// <summary>Null unless the stack holds a projectile addon.</summary>
     public WiredProjectileSettings? Projectile { get; set; }
+
+    /// <summary>Null unless the stack holds a custom contract addon.</summary>
+    public IWiredContractSource? CustomContract { get; set; }
 
     /// <summary>Text transforms (username and variable placeholders) applied to outgoing text.</summary>
     public List<IWiredTextPlaceholder> TextPlaceholders { get; }

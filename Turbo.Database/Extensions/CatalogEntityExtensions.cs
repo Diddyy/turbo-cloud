@@ -1,6 +1,11 @@
+using System;
 using System.Collections.Immutable;
+using System.Globalization;
 using Turbo.Database.Entities.Catalog;
+using Turbo.Primitives.Catalog;
+using Turbo.Primitives.Catalog.Enums;
 using Turbo.Primitives.Catalog.Snapshots;
+using Turbo.Primitives.Furniture.Enums;
 using Turbo.Primitives.Furniture.Snapshots;
 
 namespace Turbo.Database.Extensions;
@@ -26,15 +31,21 @@ public static class CatalogEntityExtensions
             Layout = entity.Layout,
             ImageData = entity.ImageData ?? [],
             TextData = entity.TextData ?? [],
-            Visible = entity.Visible,
+            // An invisible page is still sent, hidden, so a link that opens it by name finds it.
+            Visible = entity.Display != CatalogPageDisplay.Invisible,
             OfferIds = offerIds,
             ChildIds = childIds,
         };
 
+    /// <param name="activityPointType">
+    /// The activity-point type of the offer's currency row, which the provider looks up; the row's
+    /// id is not the type.
+    /// </param>
     public static CatalogOfferSnapshot ToSnapshot(
         this CatalogOfferEntity entity,
         ImmutableArray<int> productIds,
-        ImmutableArray<CatalogProductSnapshot> products
+        ImmutableArray<CatalogProductSnapshot> products,
+        int? activityPointType
     ) =>
         new()
         {
@@ -45,7 +56,7 @@ public static class CatalogEntityExtensions
             CostCredits = entity.CostCredits,
             CostSilver = 0,
             CostCurrency = entity.CostCurrency,
-            CurrencyTypeId = entity.CurrencyTypeId,
+            ActivityPointType = activityPointType,
             CanGift = entity.CanGift,
             CanBundle = entity.CanBundle,
             ClubLevel = entity.ClubLevel,
@@ -68,7 +79,12 @@ public static class CatalogEntityExtensions
             OfferId = entity.CatalogOfferEntityId,
             ProductType = entity.ProductType,
             FurniDefinitionId = entity.FurnitureDefinitionEntityId ?? -1,
-            SpriteId = definition?.SpriteId ?? -1,
+            // An effect has no definition; the client reads its effect id where a sprite id goes.
+            SpriteId =
+                entity.ProductType == ProductType.Effect
+                && EffectProducts.TryGetEffectId(entity.ExtraParam, out var effectId)
+                    ? effectId
+                    : definition?.SpriteId ?? -1,
             ExtraParam = entity.ExtraParam,
             Quantity = entity.Quantity,
             UniqueSize = series?.TotalQuantity ?? 0,
@@ -77,6 +93,34 @@ public static class CatalogEntityExtensions
             ClassName = definition?.Name,
             SubscriptionType = entity.SubscriptionType,
             SubscriptionDays = entity.SubscriptionDays,
+        };
+
+    /// <summary>
+    /// A featured item as the front page draws it. Its countdown is left at none: it is worked
+    /// out from <see cref="CatalogFrontPageItemSnapshot.ExpiresAt"/> when a page is sent.
+    /// </summary>
+    public static CatalogFrontPageItemSnapshot ToSnapshot(this CatalogFeaturedItemEntity entity) =>
+        new()
+        {
+            Position = entity.Position,
+            ItemName = entity.Title,
+            ItemPromoImage = entity.Image,
+            Type = entity.Type,
+            CatalogPageLocation =
+                entity.Type == CatalogFrontPageItemType.Page ? entity.Value : null,
+            ProductOfferId =
+                entity.Type == CatalogFrontPageItemType.Offer
+                && int.TryParse(
+                    entity.Value,
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out var offerId
+                )
+                    ? offerId
+                    : null,
+            ProductCode = entity.Type == CatalogFrontPageItemType.Product ? entity.Value : null,
+            ExpiresInSeconds = 0,
+            ExpiresAt = entity.ExpiresAt,
         };
 
     public static LtdSeriesSnapshot ToSnapshot(this LtdSeriesEntity entity) =>
@@ -91,5 +135,54 @@ public static class CatalogEntityExtensions
             IsRaffleFinished = entity.IsRaffleFinished,
             StartsAt = entity.StartsAt,
             EndsAt = entity.EndsAt,
+        };
+
+    public static VoucherSnapshot ToSnapshot(this VoucherEntity entity) =>
+        new()
+        {
+            Id = entity.Id,
+            Code = entity.Code,
+            Credits = entity.Credits,
+            CurrencyTypeId = entity.CurrencyTypeEntityId,
+            CurrencyAmount = entity.CurrencyAmount,
+            FurnitureDefinitionId = entity.FurnitureDefinitionEntityId,
+            FurnitureQuantity = entity.FurnitureQuantity,
+            BadgeCode = entity.BadgeCode,
+            MaxUses = entity.MaxUses,
+            Uses = entity.Uses,
+            ExpiresAt = entity.ExpiresAt is { } expires
+                ? DateTime.SpecifyKind(expires, DateTimeKind.Utc)
+                : null,
+            Enabled = entity.Enabled,
+            Note = entity.Note,
+            CreatedAt = DateTime.SpecifyKind(entity.CreatedAt, DateTimeKind.Utc),
+        };
+
+    public static CatalogPageExpirySnapshot ToSnapshot(
+        this CatalogPageExpiryEntity entity,
+        string pageName
+    ) =>
+        new()
+        {
+            Id = entity.Id,
+            PageId = entity.CatalogPageEntityId,
+            PageName = pageName,
+            ExpiresAt = DateTime.SpecifyKind(entity.ExpiresAt, DateTimeKind.Utc),
+            Image = entity.Image,
+        };
+
+    public static BonusRareCampaignSnapshot ToSnapshot(this BonusRareCampaignEntity entity) =>
+        new()
+        {
+            Id = entity.Id,
+            Code = entity.Code,
+            FurnitureName = entity.FurnitureName,
+            ProductCode = entity.ProductCode,
+            CreditsRequired = entity.CreditsRequired,
+            Source = entity.Source,
+            StartsAt = DateTime.SpecifyKind(entity.StartsAt, DateTimeKind.Utc),
+            EndsAt = entity.EndsAt is { } ends
+                ? DateTime.SpecifyKind(ends, DateTimeKind.Utc)
+                : null,
         };
 }

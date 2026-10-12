@@ -46,7 +46,15 @@ public class WebSocketSessionContext(PackageEncoder packageEncoder, ILogger<ISes
 
     public ArrayBufferWriter<byte>? WsBuffer { get; } = new(4096);
 
-    public async Task CloseSessionAsync() => await this.CloseAsync().ConfigureAwait(false);
+    public string? ServerCloseReason => _state.CloseReason;
+
+    public Task CloseSessionAsync(string reason = "closed by the server") =>
+        _state.CloseAsync(
+            this,
+            reason,
+            CloseAsync,
+            () => Connection.CloseAsync(SuperSocket.Connection.CloseReason.LocalClosing)
+        );
 
     public void SetRevisionId(string revisionId) => _state.RevisionId = revisionId;
 

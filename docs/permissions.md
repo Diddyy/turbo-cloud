@@ -105,8 +105,13 @@ public sealed record PermissionNodeDefinition(
     PlayerPerkFlags? Perk = null,
     string? PerkRefusal = null,
     bool ClientVisible = false,
-    bool GrantedByDefault = false);
+    bool GrantedByDefault = false,
+    bool ExplicitOnly = false);
 ```
+
+`ExplicitOnly` marks a node that lifts a rule and has to be given on purpose: no wildcard, `*`
+included, ever grants or denies it, so only an assignment naming it decides. Core uses it for
+`permissions.superuser` (§9, §17.4). The registry refuses it together with `GrantedByDefault`.
 
 `GrantedByDefault` is how a plugin says "every player may do this unless denied", as a Bukkit
 plugin's `default: true` or a Sponge `PermissionDescription` for `ROLE_USER` does: its everyday
@@ -221,6 +226,8 @@ client gates from §2. Each names the one place that reads it.
 | `room.floorplan.save_without_club` | `RoomGrain.SaveFloorPlanAsync` | 4 | see `docs/builders-club.md` §7 |
 | `room.floorplan.large` | `RoomMapModule` area limit | — (perk `BUILDER_AT_WORK`) | |
 | `catalog.builders_club.without_membership` | Builders Club catalog access | 5 | |
+| `club.habbo_club.unlimited` | `PlayerSubscriptionGrain`: a Habbo Club member for as long as it is held | — | shows the grant's own end (`GrantedUntil`, which counts an expiring group membership); a permanent grant shows 7 days left (`PermanentHabboClubDisplayDays`) that never come closer, display only. Nothing is written; taking it away leaves the membership they bought. Granting or revoking it refreshes the client (`UnlimitedClubPermissionsHandler`) |
+| `club.builders_club.unlimited` | the same for Builders Club, at `BuildersClubMaxFurniLimit`; the lapse sweep (`BuildersClubGrain`) asks it for borrowers with no running row | — | a permanent grant shows 24 hours left (`PermanentBuildersClubDisplayHours`) |
 | `navigator.category.staff` | `NavigatorService`, `EnforceCategoryCtrl` | 7 | the hardcoded `MinRank <= 1` |
 | `moderation.tool` | the moderation packets | 5 | |
 | `wired.menu` | `WiredMenuController` | 4 | |
@@ -229,7 +236,7 @@ client gates from §2. Each names the one place that reads it.
 | `chat.style.staff` | `ChatStyles.CanSpeakWith` `isStaff` (staff bubbles; also meets the ambassador flag) | — | |
 | `trade` | trading, server-enforced | — (perk `TRADE`) | sent `true`, enforced nowhere |
 | `perk.camera`, `perk.mouse_zoom`, `perk.citizen`, `perk.navigator.thumbnail_camera`, `perk.navigator.phase_two`, `perk.navigator.phase_one`, `perk.guide_tool`, `perk.judge_chat_reviews`, `perk.call_on_helpers`, `perk.vote_in_competitions`, `perk.habbo_club_offer_beta` | `PerkAllowances` only | — | the hardcoded block in `SSOTicketMessageHandler` |
-| `permissions.manage` | any future in-game editor | — | the console needs no node |
+| `permissions.manage` | the admin panel's permission editor, `:group` | — | the console needs no node |
 
 `perk.*` nodes exist because the perk list has to come from somewhere; they gate nothing on the
 server. `trade` and `room.floorplan.large` are real server gates that also project to a perk.
@@ -520,8 +527,9 @@ In all three, a gate names a node constant. No code outside the projection compa
   but only in these rooms" today.
 - **Tracks** (promote/demote ladders). Useful once there is a staff UI; until then the console's
   group add/remove is the same thing.
-- **An in-game editor.** The console is the v1 surface; `permissions.manage` is registered so a
-  nitro-next housekeeping panel can be gated when it exists.
+- **An in-game editor.** The console and the admin panel's permission editor
+  ([admin-panel.md](admin-panel.md)) are the surfaces; the panel's is gated by
+  `permissions.manage` and the rule in §17.4.
 - **Chat commands.** There is no `:command` system in the server. When there is, each command
   registers a `command.<name>` node and the same machinery gates it.
 
@@ -792,7 +800,8 @@ temporary player denials of `trade` and `chat.speak` once the mod tool is built,
 | Temporary beats permanent; `temporary-add-behaviour` | missing | **fix** (17.1) |
 | `meta-value-selection` per key | missing | **fix** (17.1) |
 | `sync` — reload after the database was edited by something else | built: `perm reload` (§9) | — |
-| Argument-based command permissions (who may grant what) | missing | **take before any in-game editor**: a manager may only grant nodes they hold and groups lighter than their heaviest (`permissions.manage.*`) |
+| Argument-based command permissions (who may grant what) | built as a weight rule (`IPermissionEditService`, `PermissionEditor`), not per-argument nodes | a manager may only grant nodes they hold, and only change groups and players lighter than their heaviest group; the admin panel and `:group` both follow it, the console is exempt. `permissions.superuser` (explicit only, with `permissions.manage`) lifts those limits for a hosted hotel with no console, and a group that gives it is only a superuser's to change. Per-argument nodes such as LuckPerms' `luckperms.user.parent.add.<group>` are not built: add them when a plugin's ranks make weights awkward |
+| Stop the last superuser removing themselves | built: `PermissionEditor.CheckKeepsAccessAsync` | a superuser's own change (group delete, node set or unset, parent change, reweight, joining or leaving a group) is applied to their own groups and assignments and resolved again first; it is refused if they would no longer hold `permissions.superuser` and `permissions.manage`. Counting every holder is not needed: the editor is always one of them. Another superuser and the console are not bound |
 | Verbose (watch checks live) | built: `perm user <player> verbose` (§10) | — |
 | `group listmembers`, `log recent`/`search`, `search <node>` (who holds it) | built: `perm group <g> members`, `perm log [search]`, `perm search` (§9) | — |
 | `group.<name>` as a node (membership checkable like a permission) | built (§5) | — |

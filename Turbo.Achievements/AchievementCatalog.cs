@@ -1,13 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Turbo.Achievements.Configuration;
 using Turbo.Database.Context;
@@ -26,6 +28,9 @@ public sealed class AchievementCatalog : IAchievementCatalog
     private readonly ICurrencyTypeProvider _currencies;
     private readonly AchievementConfig _config;
     private readonly IHotelTextProvider _texts;
+    private readonly ILogger<AchievementCatalog>? _logger;
+    private readonly IAchievementPackRegistry? _packs;
+    private readonly AchievementBadgeAssets _badgeAssets;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _publication = new(1, 1);
     private readonly Dictionary<(string, int), AchievementSourceDefinition> _sources = [];
@@ -36,14 +41,20 @@ public sealed class AchievementCatalog : IAchievementCatalog
         IDbContextFactory<TurboDbContext> database,
         ICurrencyTypeProvider currencies,
         IOptions<AchievementConfig> config,
-        IHotelTextProvider texts
+        IHotelTextProvider texts,
+        ILogger<AchievementCatalog>? logger = null,
+        IAchievementPackRegistry? packs = null,
+        AchievementBadgeAssets? badgeAssets = null
     )
     {
+        _logger = logger;
+        _packs = packs;
+        _badgeAssets = badgeAssets ?? new AchievementBadgeAssets(config);
         _database = database;
         _currencies = currencies;
         _config = config.Value;
         _texts = texts;
-        foreach (var source in AchievementDefaults.Sources)
+        foreach (var source in CoreAchievementSources.All)
             _sources.Add((source.Key, source.Version), source);
     }
 
@@ -68,6 +79,10 @@ public sealed class AchievementCatalog : IAchievementCatalog
                     !ValidKey(x.Key)
                     || x.Version <= 0
                     || !Enum.IsDefined(x.Reducer)
+                    || (
+                        !x.AlsoReducers.IsDefaultOrEmpty
+                        && x.AlsoReducers.Any(r => !Enum.IsDefined(r))
+                    )
                     || _sources.ContainsKey((x.Key, x.Version))
                 )
             )
@@ -86,8 +101,153 @@ public sealed class AchievementCatalog : IAchievementCatalog
         });
     }
 
+    /// <summary>
+    /// Installs every registered pack. A pack only adds: a definition whose key or id the hotel
+    /// already has is left exactly as it is, so hotel edits and retirements survive a new pack
+    /// version while its new achievements still arrive. Each pack goes through the same audited,
+    /// validated import an administrator would run, and one failing (for example no badge asset
+    /// directory or texts yet) never stops another or startup.
+    /// </summary>
+    private async Task InstallPacksAsync(CancellationToken ct)
+    {
+        if (_packs is null)
+            return;
+        foreach (var pack in _packs.Packs.OrderBy(x => x.Key, StringComparer.Ordinal))
+        {
+            try
+            {
+                await InstallPackAsync(pack, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(
+                    ex,
+                    "The achievement pack {Pack} was not installed. Fix what the error names (badge asset directory, badge texts), then run: achievement reload",
+                    pack.Key
+                );
+            }
+        }
+    }
+
+    private async Task InstallPackAsync(IAchievementPack pack, CancellationToken ct)
+    {
+        var db = await _database.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var dbScope = db.ConfigureAwait(false);
+        var stored = (
+            await db.AchievementDefinitions.AsNoTracking().ToListAsync(ct).ConfigureAwait(false)
+        )
+            .Select(x => AchievementDefinitionJson.Read(x.DefinitionJson))
+            .ToList();
+        var keys = stored.Select(x => x.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ids = stored.Select(x => x.Id).ToHashSet();
+        var missing = pack
+            .Definitions.Where(x => !keys.Contains(x.Key) && !ids.Contains(x.Id))
+            .ToImmutableArray();
+        foreach (
+            var clash in pack.Definitions.Where(x => !keys.Contains(x.Key) && ids.Contains(x.Id))
+        )
+            _logger?.LogWarning(
+                "Pack {Pack} was not given achievement {Key}: id {Id} is already used by another achievement",
+                pack.Key,
+                clash.Key,
+                clash.Id
+            );
+        if (!missing.IsEmpty)
+        {
+            // The same pack version can have different definitions still missing from one start to
+            // the next, and an operation id must always mean the same request, so it names what it adds.
+            await ImportAsync(
+                    missing,
+                    apply: true,
+                    actor: "turbo",
+                    reason: $"Install the {pack.Key} achievement pack",
+                    operationId: $"pack:{pack.Key}:{pack.Version}:{Fingerprint(missing)}",
+                    ct
+                )
+                .ConfigureAwait(false);
+            _logger?.LogInformation(
+                "Installed {Count} achievements from the {Pack} pack.",
+                missing.Length,
+                pack.Key
+            );
+        }
+
+        await HookInstalledAsync(pack, stored, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Moves achievements a pack installed on the placeholder source onto the real source a later
+    /// version of the pack records them on (the crackables records, once crackable furni record
+    /// their hits). Only a row the hotel never touched moves: the pack's own first revision, still
+    /// on <see cref="AchievementSources.UNHOOKED"/>, where no progress can exist. A row the hotel
+    /// edited is the hotel's and stays as it is. Its own import, so a refusal (a badge asset the
+    /// hotel lacks) is logged without holding back the rest of the pack.
+    /// </summary>
+    private async Task HookInstalledAsync(
+        IAchievementPack pack,
+        List<AchievementDefinition> stored,
+        CancellationToken ct
+    )
+    {
+        var latest = stored
+            .GroupBy(x => x.Id)
+            .Select(x => x.MaxBy(d => d.Revision)!)
+            .ToDictionary(x => x.Id);
+        var hooked = pack
+            .Definitions.Where(x =>
+                x.Source != AchievementSources.UNHOOKED
+                && latest.TryGetValue(x.Id, out var current)
+                && string.Equals(current.Key, x.Key, StringComparison.OrdinalIgnoreCase)
+                && current.Source == AchievementSources.UNHOOKED
+                && current.Revision == 1
+            )
+            .Select(x => x with { Revision = 2 })
+            .ToImmutableArray();
+
+        if (hooked.IsEmpty)
+            return;
+
+        try
+        {
+            await ImportAsync(
+                    hooked,
+                    apply: true,
+                    actor: "turbo",
+                    reason: $"Hook achievements of the {pack.Key} achievement pack",
+                    operationId: $"pack-hook:{pack.Key}:{pack.Version}:{Fingerprint(hooked)}",
+                    ct
+                )
+                .ConfigureAwait(false);
+            _logger?.LogInformation(
+                "Hooked {Count} achievements of the {Pack} pack to their sources.",
+                hooked.Length,
+                pack.Key
+            );
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(
+                ex,
+                "Achievements of the {Pack} pack were not hooked to their sources; they stay on the placeholder. Fix what the error names, then run: achievement reload",
+                pack.Key
+            );
+        }
+    }
+
+    private static string Fingerprint(ImmutableArray<AchievementDefinition> definitions) =>
+        Convert.ToHexString(
+            SHA256.HashData(
+                Encoding.UTF8.GetBytes(string.Join(',', definitions.Select(x => x.Key)))
+            )
+        )[..8];
+
     public async Task ReloadAsync(CancellationToken ct)
     {
+        await InstallPacksAsync(ct).ConfigureAwait(false);
         await _publication.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -99,14 +259,11 @@ public sealed class AchievementCatalog : IAchievementCatalog
                 .ConfigureAwait(false);
             var next = rows.GroupBy(x => x.AchievementId)
                 .Select(x => x.MaxBy(r => r.Revision)!)
-                .Select(x =>
-                    JsonSerializer.Deserialize<AchievementDefinition>(x.DefinitionJson)
-                    ?? throw new InvalidOperationException("Empty achievement definition.")
-                )
+                .Select(x => AchievementDefinitionJson.Read(x.DefinitionJson))
                 .OrderBy(x => x.Order)
                 .ThenBy(x => x.Id)
                 .ToImmutableArray();
-            Validate(next, allowRetainedSources: true);
+            Validate(next, allowRetainedSources: true, HotelTexts.Empty);
             lock (_gate)
                 _current = next;
         }
@@ -156,9 +313,7 @@ public sealed class AchievementCatalog : IAchievementCatalog
                 .AchievementDefinitions.AsNoTracking()
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
-            var existing = rows.Select(x =>
-                    JsonSerializer.Deserialize<AchievementDefinition>(x.DefinitionJson)!
-                )
+            var existing = rows.Select(x => AchievementDefinitionJson.Read(x.DefinitionJson))
                 .ToArray();
             var combined = existing
                 .GroupBy(x => x.Id)
@@ -168,16 +323,35 @@ public sealed class AchievementCatalog : IAchievementCatalog
                 .OrderBy(x => x.Order)
                 .ThenBy(x => x.Id)
                 .ToImmutableArray();
-            Validate(combined, allowRetainedSources: false);
+            await _badgeAssets
+                .CheckAsync(
+                    combined
+                        .Where(x => x.State == AchievementState.Enabled)
+                        .SelectMany(x => x.Levels)
+                        .Select(x => x.BadgeCode),
+                    ct
+                )
+                .ConfigureAwait(false);
+            var badgeTexts = await _texts
+                .GetTextsAsync(BadgeTextKeys(combined), ct)
+                .ConfigureAwait(false);
+            Validate(combined, allowRetainedSources: false, badgeTexts);
             foreach (var definition in definitions)
             {
                 var history = existing.Where(x => x.Id == definition.Id).ToArray();
                 if (
                     history.Any(x =>
                         x.Key != definition.Key
-                        || x.Source != definition.Source
-                        || x.SourceVersion != definition.SourceVersion
-                        || x.Reducer != definition.Reducer
+                        // Nothing records the placeholder source, so no progress can exist yet and
+                        // the definition may be moved to a real source and reducer once.
+                        || (
+                            x.Source != AchievementSources.UNHOOKED
+                            && (
+                                x.Source != definition.Source
+                                || x.SourceVersion != definition.SourceVersion
+                                || x.Reducer != definition.Reducer
+                            )
+                        )
                         || x.Levels.Length > definition.Levels.Length
                     )
                 )
@@ -232,7 +406,8 @@ public sealed class AchievementCatalog : IAchievementCatalog
 
     private void Validate(
         ImmutableArray<AchievementDefinition> definitions,
-        bool allowRetainedSources
+        bool allowRetainedSources,
+        HotelTexts texts
     )
     {
         if (
@@ -252,8 +427,8 @@ public sealed class AchievementCatalog : IAchievementCatalog
             foreach (var d in definitions)
             {
                 if (
-                    d.Id < 1001
-                    || (d.Id > 1018 && d.Id < 100000)
+                    d.Id < 1
+                    || (!allowRetainedSources && !IdAllowed(d.Id))
                     || !ValidKey(d.Key)
                     || !ValidKey(d.Category)
                     || d.Revision <= 0
@@ -262,17 +437,60 @@ public sealed class AchievementCatalog : IAchievementCatalog
                     || d.Levels.IsDefaultOrEmpty
                     || d.Levels.Length > 100
                     || d.DisplayMethod is < 0 or > 2
+                    || !Enum.IsDefined(d.State)
+                    || d.State == AchievementState.WiredControlled
                 )
                     throw new InvalidOperationException(
                         "Invalid achievement identity, units or packet limits."
+                    );
+                if (
+                    d.ActiveFromUtc is { Kind: not DateTimeKind.Utc }
+                    || d.ActiveUntilUtc is { Kind: not DateTimeKind.Utc }
+                    || (
+                        d.ActiveFromUtc is { } activeFrom
+                        && d.ActiveUntilUtc is { } activeUntil
+                        && activeFrom >= activeUntil
+                    )
+                )
+                    throw new InvalidOperationException(
+                        "An active window needs UTC times with the start before the end."
                     );
                 if (!_sources.TryGetValue((d.Source, d.SourceVersion), out var source))
                 {
                     if (!allowRetainedSources)
                         throw new InvalidOperationException("Unknown achievement source/version.");
                 }
-                else if (source.Reducer != d.Reducer)
+                else if (!source.Allows(d.Reducer))
                     throw new InvalidOperationException("Source reducer mismatch.");
+                if (
+                    !allowRetainedSources
+                    && d.State == AchievementState.Enabled
+                    && d.Source == AchievementSources.UNHOOKED
+                )
+                    throw new InvalidOperationException(
+                        $"Achievement {d.Key} cannot be enabled: nothing records facts for it yet. Move it to a source something records first."
+                    );
+                if (
+                    d.Match is { } narrowing
+                    && (
+                        !Enum.IsDefined(narrowing.ValueFrom)
+                        || narrowing.Values.IsDefault
+                        || narrowing.Values.Length > _config.MaxMatchValues
+                        || narrowing.Values.Any(x =>
+                            string.IsNullOrEmpty(x) || x.Length > MAX_FACT_VALUE_LENGTH
+                        )
+                        || (
+                            narrowing.ValueFrom == AchievementValueSource.UtcDate
+                            && (
+                                d.Reducer != AchievementReducer.Distinct
+                                || narrowing.Values.Length > 0
+                            )
+                        )
+                    )
+                )
+                    throw new InvalidOperationException(
+                        "Invalid match: a UTC-date value needs the distinct reducer and no value list, and values must be 1-512 characters."
+                    );
                 var previous = d.Reducer == AchievementReducer.Rank ? int.MaxValue : -1;
                 if (d.Levels.Sum(x => (long)x.Score) > int.MaxValue)
                     throw new InvalidOperationException("Achievement score exceeds packet limits.");
@@ -307,22 +525,20 @@ public sealed class AchievementCatalog : IAchievementCatalog
                             "Invalid badge, score or cumulative requirements."
                         );
                     previous = level.Requirement;
-                    if (
-                        !allowRetainedSources
-                        && d.Enabled
-                        && !d.Archived
-                        && (
-                            string.IsNullOrWhiteSpace(_config.BadgeAssetDirectory)
-                            || !File.Exists(
-                                Path.Combine(_config.BadgeAssetDirectory, level.BadgeCode + ".png")
-                            )
-                            || !HasBadgeText("badge_name_", level.BadgeCode)
-                            || !HasBadgeText("badge_desc_", level.BadgeCode)
+                    if (!allowRetainedSources && d.State == AchievementState.Enabled)
+                    {
+                        if (!_badgeAssets.Exists(level.BadgeCode))
+                            throw new InvalidOperationException(
+                                $"Enabled achievement {d.Key} requires the badge image {_badgeAssets.Describe(level.BadgeCode)}."
+                            );
+                        if (
+                            !HasBadgeText(texts, BADGE_NAME, level.BadgeCode)
+                            || !HasBadgeText(texts, BADGE_DESC, level.BadgeCode)
                         )
-                    )
-                        throw new InvalidOperationException(
-                            $"Enabled achievement {d.Key} requires badge image and localized name/description for {level.BadgeCode}."
-                        );
+                            throw new InvalidOperationException(
+                                $"Enabled achievement {d.Key} requires a localized badge name and description for {level.BadgeCode}."
+                            );
+                    }
                     foreach (var reward in level.Rewards)
                         if (
                             !ValidKey(reward.Handler)
@@ -349,13 +565,36 @@ public sealed class AchievementCatalog : IAchievementCatalog
             }
     }
 
-    private bool HasBadgeText(string prefix, string code)
-    {
+    private const string BADGE_NAME = "badge_name_";
+    private const string BADGE_DESC = "badge_desc_";
+
+    /// <summary>The texts an enabled achievement's badges are checked against, to read at once.</summary>
+    private static IEnumerable<string> BadgeTextKeys(
+        IEnumerable<AchievementDefinition> definitions
+    ) =>
+        definitions
+            .Where(x => x.State == AchievementState.Enabled)
+            .SelectMany(x => x.Levels)
+            .SelectMany(x => new[] { x.BadgeCode, BadgeBase(x.BadgeCode) })
+            .SelectMany(x => new[] { BADGE_NAME + x, BADGE_DESC + x });
+
+    private static bool HasBadgeText(HotelTexts texts, string prefix, string code) =>
         // The client resolves a badge's exact text first, then its base text with level tokens.
-        var badgeBase = Regex.Replace(code, "[0-9]+$", "");
-        return _texts.TryGetText(prefix + code, out _)
-            || _texts.TryGetText(prefix + badgeBase, out _);
-    }
+        texts.TryGetText(prefix + code, out _) || texts.TryGetText(prefix + BadgeBase(code), out _);
+
+    private static string BadgeBase(string code) => Regex.Replace(code, "[0-9]+$", "");
+
+    /// <summary>The longest value a fact may carry (<c>AchievementFactRecorder</c>), so a longer match could never fire.</summary>
+    private const int MAX_FACT_VALUE_LENGTH = 512;
+
+    /// <summary>
+    /// A hotel's own achievements start at <see cref="AchievementIds.CUSTOM_START"/>; below it an id
+    /// belongs to a registered pack. Rows already stored are not checked, so a plugin's pack that
+    /// is no longer installed never stops the hotel from starting.
+    /// </summary>
+    private bool IdAllowed(int id) =>
+        id >= AchievementIds.CUSTOM_START
+        || (_packs?.Packs.Any(p => p.IdRanges.Any(r => r.Contains(id))) ?? false);
 
     private static bool ValidKey(string key) => Regex.IsMatch(key, "^[a-z][a-z0-9_.-]{0,63}$");
 }

@@ -39,7 +39,17 @@ public static class ModelBuilderExtensions
                 {
                     // If this is an enum, HasDefaultValue(enumValue) is fine
                     // provided the property is mapped as enum (or has a converter).
-                    entity.Property(prop.Name).HasDefaultValue(constAttr.Value);
+                    var property = entity.Property(prop.Name).HasDefaultValue(constAttr.Value);
+
+                    // EF leaves a column out of an INSERT while it holds its CLR default (0,
+                    // false, an enum's first member, null) so the database default can apply. For
+                    // a value type that is a real value: a room's first raid setting saved as
+                    // "kick" (0) was stored as the default "temporary ban", and a new badge's
+                    // null slot as slot 0. EF always writes these instead; the property's
+                    // initializer carries the default, and the database default is for rows
+                    // written outside EF.
+                    if (prop.PropertyType.IsValueType)
+                        property.ValueGeneratedNever();
                 }
 
                 // 3) Optional: enum storage guidance (int/long/string)
@@ -73,11 +83,14 @@ public static class ModelBuilderExtensions
             v => DateTime.SpecifyKind(v, DateTimeKind.Utc)
         );
 
+        // Every time is stored as UTC and read back marked as UTC, the optional ones (a last login,
+        // an expiry) as well: unmarked, a time is sent on as local, and a browser west of UTC reads
+        // a login an hour ago as hours from now.
         foreach (
             var p in mb
                 .Model.GetEntityTypes()
                 .SelectMany(t => t.GetProperties())
-                .Where(p => p.ClrType == typeof(DateTime))
+                .Where(p => p.ClrType == typeof(DateTime) || p.ClrType == typeof(DateTime?))
         )
             p.SetValueConverter(utc);
 

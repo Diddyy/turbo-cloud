@@ -36,6 +36,63 @@ public static class PermissionNodes
             "catalog.builders_club.without_membership";
         public const string GUILD_ANY_GROUP = "catalog.guild.any_group";
         public const string GIFT_HIDE_SENDER = "catalog.gift.hide_sender";
+
+        /// <summary>
+        /// Change the catalog in the admin panel (pages, offers, prices) and publish it to
+        /// players. Seeing it there needs <see cref="Admin.CATALOG_VIEW"/> as well.
+        /// </summary>
+        public const string MANAGE = "catalog.manage";
+    }
+
+    public static class Gamedata
+    {
+        /// <summary>
+        /// Change the hotel's gamedata in the admin panel: take in Habbo's updates, edit furniture
+        /// definitions, rebuild the files the client loads and roll changes back. Seeing it there
+        /// needs <see cref="Admin.GAMEDATA_VIEW"/> as well.
+        /// </summary>
+        public const string MANAGE = "gamedata.manage";
+    }
+
+    public static class Content
+    {
+        /// <summary>
+        /// Change the game's content in the panel: publish achievements, pin badges' rarity and
+        /// give or take them, edit the navigator's categories, fix and remove groups, and edit pet
+        /// breeds, pet speech and bots. Seeing it there needs <see cref="Admin.CONTENT_VIEW"/>.
+        /// </summary>
+        public const string MANAGE = "content.manage";
+    }
+
+    public static class Settings
+    {
+        /// <summary>
+        /// Change the server's settings in the admin panel: override what <c>appsettings.json</c>
+        /// says, replace a secret, and put a setting back. Seeing them there needs
+        /// <see cref="Admin.SETTINGS_VIEW"/> as well. A setting is the whole server's, so this is
+        /// for those who run it.
+        /// </summary>
+        public const string MANAGE = "settings.manage";
+    }
+
+    /// <summary>
+    /// Memberships held by permission rather than bought: the player counts as a member for as
+    /// long as they hold the node, whatever their subscription rows say. Nothing is written, so
+    /// taking the node away leaves them with exactly the membership they bought.
+    /// </summary>
+    public static class Club
+    {
+        public const string HABBO_CLUB_UNLIMITED = "club.habbo_club.unlimited";
+        public const string BUILDERS_CLUB_UNLIMITED = "club.builders_club.unlimited";
+    }
+
+    public static class Figure
+    {
+        /// <summary>
+        /// Wear any clothing and colour the figure data has, whatever it says of club, sale or
+        /// selection: staff dressing for an event, or testing clothing not yet released.
+        /// </summary>
+        public const string ANY = "figure.any";
     }
 
     public static class Navigator
@@ -101,6 +158,7 @@ public static class PermissionNodes
         public const string GIVEBADGE = "command.givebadge";
         public const string TAKEBADGE = "command.takebadge";
         public const string GIVEITEM = "command.giveitem";
+        public const string GIFT = "command.gift";
 
         /// <summary>Aim a currency, badge or item at <c>@room</c> or <c>@online</c>.</summary>
         public const string GIVE_MASS = "command.give.mass";
@@ -138,6 +196,101 @@ public static class PermissionNodes
     public static class Permissions
     {
         public const string MANAGE = "permissions.manage";
+
+        /// <summary>
+        /// Lifts the limits on whoever edits permissions: any group, any player and any node,
+        /// themselves included, and the groups that carry this node. Needs
+        /// <see cref="MANAGE"/> as well. Explicit only: no wildcard grants it, so it is given by
+        /// naming it, by the console or by a holder.
+        /// </summary>
+        public const string SUPERUSER = "permissions.superuser";
+    }
+
+    public static class Admin
+    {
+        /// <summary>Sign in to the admin panel. What can be done there is checked node by node.</summary>
+        public const string PANEL = "admin.panel";
+
+        /// <summary>
+        /// Give another player a link to make their admin panel passkey, which replaces any they
+        /// have. Only for a player whose every node the issuer holds too: a link is the account.
+        /// </summary>
+        public const string PASSKEYS_RESET = "admin.passkeys.reset";
+
+        /// <summary>Find any room in the panel and see its settings, who is in it, rights and bans.</summary>
+        public const string ROOMS_VIEW = "admin.rooms.view";
+
+        /// <summary>
+        /// See every group, any player's permissions, who is given a node, and the permission log
+        /// in the panel. Changing them needs <see cref="Permissions.MANAGE"/> as well.
+        /// </summary>
+        public const string PERMISSIONS_VIEW = "admin.permissions.view";
+
+        /// <summary>
+        /// Find any player in the panel and see their profile, wallet, rooms and sanctions. Read
+        /// only: changing a player needs the node of whatever is changed.
+        /// </summary>
+        public const string PLAYERS_VIEW = "admin.players.view";
+
+        /// <summary>
+        /// Read the command log in the panel: every logged command, who ran it, where from, with
+        /// what and how it went.
+        /// </summary>
+        public const string COMMAND_LOG_VIEW = "admin.commandlog.view";
+
+        /// <summary>
+        /// Read the room chat log in the panel: what players said in rooms, whispers too, who to
+        /// and when.
+        /// </summary>
+        public const string CHATLOG_VIEW = "admin.chatlog.view";
+
+        /// <summary>
+        /// See the catalog in the panel: its pages, offers and prices. Changing it needs
+        /// <see cref="Catalog.MANAGE"/> as well.
+        /// </summary>
+        public const string CATALOG_VIEW = "admin.catalog.view";
+
+        /// <summary>
+        /// See the hotel's gamedata in the panel: Habbo's releases, what an update would change,
+        /// the files the client loads and the history of changes. Changing it needs
+        /// <see cref="Gamedata.MANAGE"/> as well.
+        /// </summary>
+        public const string GAMEDATA_VIEW = "admin.gamedata.view";
+
+        /// <summary>Create new players in the panel. Seeing players needs <see cref="PLAYERS_VIEW"/>.</summary>
+        public const string PLAYERS_CREATE = "admin.players.create";
+
+        /// <summary>
+        /// Issue a player a login ticket in the panel, and take it away. A ticket logs in as the
+        /// player, so it is only for a player whose every node the issuer holds too, as a setup
+        /// link is.
+        /// </summary>
+        public const string TICKETS_ISSUE = "admin.tickets.issue";
+
+        /// <summary>
+        /// Manage how a player signs in to the public site: take their Discord account off them, and
+        /// end their sign-ins there. Only for a player whose every node the staff member holds too.
+        /// </summary>
+        public const string ACCOUNTS_MANAGE = "admin.accounts.manage";
+
+        /// <summary>
+        /// See and change the welcome message every player is shown when they log in, in the
+        /// panel's hotel controls.
+        /// </summary>
+        public const string WELCOME_MESSAGE_MANAGE = "admin.welcome.manage";
+
+        /// <summary>
+        /// See the server's settings in the panel: each value, where it comes from and whether a
+        /// restart is waiting on it. Secrets are never shown. Changing them needs
+        /// <see cref="Settings.MANAGE"/> as well.
+        /// </summary>
+        public const string SETTINGS_VIEW = "admin.settings.view";
+
+        /// <summary>
+        /// See the game's content in the panel: achievements, badges, the navigator's categories,
+        /// groups, pets and bots. Changing it needs <see cref="Content.MANAGE"/> as well.
+        /// </summary>
+        public const string CONTENT_VIEW = "admin.content.view";
     }
 
     /// <summary>

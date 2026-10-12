@@ -45,28 +45,37 @@ public sealed class CatalogSnapshotProvider<TTag>(
 
         try
         {
-            // Every catalog is its own tree and is loaded on its own. Offers and products have
-            // no type of their own, so they are reached through the page that holds them; a row
-            // of the other catalog must not appear here, because the placement path asks this
-            // snapshot whether an offer is one it is allowed to hand out.
-            var pages = await dbCtx
+            // Both catalogs are cut from the one tree of pages. Offers and products have no
+            // catalog of their own, so they follow the page that holds them; an offer whose page
+            // this catalog does not show must not appear here, because the placement path asks
+            // this snapshot whether an offer is one it is allowed to hand out.
+            var allPages = await dbCtx
                 .CatalogPages.AsNoTracking()
-                .Where(x => x.CatalogType == catalogType)
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
-            var offers = await dbCtx
-                .CatalogOffers.AsNoTracking()
-                .Where(x => x.Page.CatalogType == catalogType)
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
-            var products = await dbCtx
-                .CatalogProducts.AsNoTracking()
-                .Where(x => x.Offer.Page.CatalogType == catalogType)
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
+            var tree = CatalogTree.Cut(allPages, catalogType);
+            var pages = tree.Pages;
+            var offers = (
+                await dbCtx.CatalogOffers.AsNoTracking().ToListAsync(ct).ConfigureAwait(false)
+            )
+                .Where(x => tree.SellingPageIds.Contains(x.CatalogPageEntityId))
+                .ToList();
+            var offerIdSet = offers.Select(x => x.Id).ToHashSet();
+            var products = (
+                await dbCtx.CatalogProducts.AsNoTracking().ToListAsync(ct).ConfigureAwait(false)
+            )
+                .Where(x => offerIdSet.Contains(x.CatalogOfferEntityId))
+                .ToList();
             var allSeries = await dbCtx
                 .LtdSeries.AsNoTracking()
                 .ToListAsync(ct)
+                .ConfigureAwait(false);
+            // An offer names its currency by its currency_types row; what the wallet and the
+            // client go by is that row's activity-point type.
+            var activityPointTypes = await dbCtx
+                .CurrencyTypes.AsNoTracking()
+                .Where(x => x.ActivityPointType != null)
+                .ToDictionaryAsync(x => x.Id, x => x.ActivityPointType!.Value, ct)
                 .ConfigureAwait(false);
 
             // Group by product and pick the most relevant series (Active > Newest)
@@ -80,18 +89,30 @@ public sealed class CatalogSnapshotProvider<TTag>(
                             .First()
                 );
 
-            var pageChildrenIds = pages
-                .GroupBy(p => p.ParentEntityId ?? -1)
-                .ToImmutableDictionary(
-                    g => g.Key,
-                    g =>
-                        g.OrderBy(x => x.SortOrder)
-                            .ThenBy(x => x.Localization)
-                            .Select(x => x.Id)
-                            .ToImmutableArray()
-                );
+            // The front page's featured items belong to the normal catalog, whose front page
+            // draws them.
+            var frontPageItems =
+                catalogType == CatalogType.Normal
+                    ? (
+                        await dbCtx
+                            .CatalogFeaturedItems.AsNoTracking()
+                            .OrderBy(x => x.Position)
+                            .ThenBy(x => x.Id)
+                            .ToListAsync(ct)
+                            .ConfigureAwait(false)
+                    )
+                        .Select(x => x.ToSnapshot())
+                        .ToImmutableArray()
+                    : [];
 
+            var pageChildrenIds = tree.ChildIds;
+
+            // A hidden offer stays known by id (Builders Club placement and the purchase check
+            // ask), but no page lists it. A page lists its offers in the order the editor set.
             var pageOfferIds = offers
+                .Where(o => o.Visible)
+                .OrderBy(o => o.SortOrder)
+                .ThenBy(o => o.Id)
                 .GroupBy(o => o.CatalogPageEntityId)
                 .ToImmutableDictionary(g => g.Key, g => g.Select(x => x.Id).ToImmutableArray());
 
@@ -118,14 +139,32 @@ public sealed class CatalogSnapshotProvider<TTag>(
                         : [];
                     var products = ids.Select(x => productsById[x]).ToImmutableArray();
 
-                    return x.ToSnapshot(ids, products);
+                    int? activityPointType = null;
+
+                    if (x.CurrencyTypeId is { } currencyId)
+                    {
+                        if (activityPointTypes.TryGetValue(currencyId, out var type))
+                            activityPointType = type;
+                        else
+                            _logger.LogWarning(
+                                "Catalog offer {OfferId} is priced in currency type {CurrencyTypeId}, which is not an activity-point currency; its currency price is not charged",
+                                x.Id,
+                                currencyId
+                            );
+                    }
+
+                    return x.ToSnapshot(ids, products, activityPointType);
                 })
                 .ToImmutableDictionary(x => x.Id);
 
+            // A page that is here only to lead to one below it lists none of its own offers.
             var pagesById = pages
                 .Select(x =>
                     x.ToSnapshot(
-                        pageOfferIds.TryGetValue(x.Id, out var offerIds) ? offerIds : [],
+                        tree.SellingPageIds.Contains(x.Id)
+                        && pageOfferIds.TryGetValue(x.Id, out var offerIds)
+                            ? offerIds
+                            : [],
                         pageChildrenIds.TryGetValue(x.Id, out var childIds) ? childIds : []
                     )
                 )
@@ -134,9 +173,9 @@ public sealed class CatalogSnapshotProvider<TTag>(
             var snapshot = new CatalogSnapshot
             {
                 CatalogType = CatalogType,
-                // A hotel that has no pages of this type at all is not an error: it simply has
-                // no such catalog, and the root of nothing is -1.
-                RootPageId = pages.FirstOrDefault(x => x.ParentEntityId == null)?.Id ?? -1,
+                // A hotel that has no pages at all is not an error: it simply has no catalog,
+                // and the root of nothing is -1.
+                RootPageId = tree.RootId,
                 PagesById = pagesById,
                 OffersById = offersById,
                 ProductsById = productsById,
@@ -149,6 +188,7 @@ public sealed class CatalogSnapshotProvider<TTag>(
                     .Values.Where(x => x.LtdSeriesId is not null)
                     .GroupBy(x => x.LtdSeriesId!.Value)
                     .ToImmutableDictionary(g => g.Key, g => g.Min(x => x.Id)),
+                FrontPageItems = frontPageItems,
             };
 
             _logger.LogInformation(

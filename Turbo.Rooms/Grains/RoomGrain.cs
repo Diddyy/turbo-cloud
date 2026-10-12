@@ -11,6 +11,7 @@ using Microsoft.Extensions.Options;
 using Orleans;
 using Orleans.Runtime;
 using Orleans.Streams;
+using Turbo.Catalog.Configuration;
 using Turbo.Database.Achievements;
 using Turbo.Database.Context;
 using Turbo.Database.Extensions;
@@ -21,6 +22,7 @@ using Turbo.Primitives.Action;
 using Turbo.Primitives.Catalog;
 using Turbo.Primitives.Commands;
 using Turbo.Primitives.Furniture.Providers;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Networking;
 using Turbo.Primitives.Orleans;
 using Turbo.Primitives.Pets.Providers;
@@ -62,6 +64,8 @@ public sealed partial class RoomGrain : Grain, IRoomGrain
     internal readonly PetConfig _petConfig;
     internal readonly BotConfig _botConfig;
     internal readonly WiredConfig _wiredConfig;
+    internal readonly WiredChestConfig _wiredChestConfig;
+    internal readonly CatalogConfig _catalogConfig;
     internal readonly IGrainFactory _grainFactory;
     internal readonly IRoomModelProvider _roomModelProvider;
     internal readonly IRoomItemsProvider _itemsLoader;
@@ -70,14 +74,17 @@ public sealed partial class RoomGrain : Grain, IRoomGrain
     internal readonly IRoomAvatarProvider _avatarProvider;
     internal readonly IRoomWiredVariablesProvider _wiredVariablesProvider;
     internal readonly IPetBreedProvider _petBreedProvider;
+    internal readonly IPetSpeechProvider _petSpeechProvider;
     internal readonly IFurnitureDefinitionProvider _definitionProvider;
     internal readonly IHotelTextProvider _hotelTextProvider;
     internal readonly IChatStyleProvider _chatStyleProvider;
+    internal readonly IWordFilter _wordFilter;
     internal readonly ICatalogService _catalogService;
     internal readonly IPermissionRegistryProvider _permissionRegistryProvider;
     internal readonly ICommandRegistryProvider _commandRegistryProvider;
     internal readonly IOperatorCommandRunner _operatorCommandRunner;
     internal readonly IPlayerNoticeService _playerNoticeService;
+    internal readonly IRoomEventListenerRegistry _eventListeners;
     internal readonly EventSystem _eventSystem;
     internal readonly ILogger<IRoomGrain> _logger;
     internal readonly IAchievementFactRecorder _achievementFacts;
@@ -109,6 +116,8 @@ public sealed partial class RoomGrain : Grain, IRoomGrain
     public readonly RoomCommandSystem CommandSystem;
     public readonly RoomTimerSystem TimerSystem;
     public readonly RoomWaterAreaSystem WaterAreaSystem;
+    public readonly RoomWiredChestSystem WiredChestSystem;
+    public readonly RoomWiredTransactionSystem WiredTransactionSystem;
 
     internal IAsyncStream<RoomOutboundSnapshot> _roomOutbound = default!;
     private IGrainTimer? _tickTimer;
@@ -121,6 +130,8 @@ public sealed partial class RoomGrain : Grain, IRoomGrain
         IOptions<PetConfig> petConfig,
         IOptions<BotConfig> botConfig,
         IOptions<WiredConfig> wiredConfig,
+        IOptions<WiredChestConfig> wiredChestConfig,
+        IOptions<CatalogConfig> catalogConfig,
         IGrainFactory grainFactory,
         IRoomModelProvider roomModelProvider,
         IRoomItemsProvider itemsLoader,
@@ -129,14 +140,17 @@ public sealed partial class RoomGrain : Grain, IRoomGrain
         IRoomAvatarProvider avatarProvider,
         IRoomWiredVariablesProvider wiredVariablesProvider,
         IPetBreedProvider petBreedProvider,
+        IPetSpeechProvider petSpeechProvider,
         IFurnitureDefinitionProvider definitionProvider,
         IHotelTextProvider hotelTextProvider,
         IChatStyleProvider chatStyleProvider,
+        IWordFilter wordFilter,
         ICatalogService catalogService,
         IPermissionRegistryProvider permissionRegistryProvider,
         ICommandRegistryProvider commandRegistryProvider,
         IOperatorCommandRunner operatorCommandRunner,
         IPlayerNoticeService playerNoticeService,
+        IRoomEventListenerRegistry eventListeners,
         EventSystem eventSystem,
         IAchievementFactRecorder achievementFacts,
         ILogger<IRoomGrain> logger
@@ -147,6 +161,8 @@ public sealed partial class RoomGrain : Grain, IRoomGrain
         _petConfig = petConfig.Value;
         _botConfig = botConfig.Value;
         _wiredConfig = wiredConfig.Value;
+        _wiredChestConfig = wiredChestConfig.Value;
+        _catalogConfig = catalogConfig.Value;
         _grainFactory = grainFactory;
         _roomModelProvider = roomModelProvider;
         _itemsLoader = itemsLoader;
@@ -155,14 +171,17 @@ public sealed partial class RoomGrain : Grain, IRoomGrain
         _avatarProvider = avatarProvider;
         _wiredVariablesProvider = wiredVariablesProvider;
         _petBreedProvider = petBreedProvider;
+        _petSpeechProvider = petSpeechProvider;
         _definitionProvider = definitionProvider;
         _hotelTextProvider = hotelTextProvider;
         _chatStyleProvider = chatStyleProvider;
+        _wordFilter = wordFilter;
         _catalogService = catalogService;
         _permissionRegistryProvider = permissionRegistryProvider;
         _commandRegistryProvider = commandRegistryProvider;
         _operatorCommandRunner = operatorCommandRunner;
         _playerNoticeService = playerNoticeService;
+        _eventListeners = eventListeners;
         _eventSystem = eventSystem;
         _logger = logger;
         _achievementFacts = achievementFacts;
@@ -193,6 +212,8 @@ public sealed partial class RoomGrain : Grain, IRoomGrain
         CommandSystem = new(this);
         TimerSystem = new(this);
         WaterAreaSystem = new(this);
+        WiredChestSystem = new(this);
+        WiredTransactionSystem = new(this);
 
         EventModule.Register(WaterAreaSystem);
         EventModule.Register(RollerSystem);
@@ -202,6 +223,7 @@ public sealed partial class RoomGrain : Grain, IRoomGrain
         FurniModule.RegisterPlacementLimit(WiredSystem);
         FurniModule.RegisterPlacementLimit(VariableFxSystem);
         EventModule.Register(ChatSystem);
+        EventModule.Register(WiredChestSystem);
     }
 
     public override async Task OnActivateAsync(CancellationToken ct)

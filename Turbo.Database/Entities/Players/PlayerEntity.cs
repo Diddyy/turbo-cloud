@@ -8,17 +8,36 @@ using Turbo.Database.Entities.Furniture;
 using Turbo.Database.Entities.Messenger;
 using Turbo.Database.Entities.Room;
 using Turbo.Database.Entities.Security;
+using Turbo.Primitives.Players;
 using Turbo.Primitives.Players.Enums;
 using Turbo.Primitives.Rooms.Enums;
 
 namespace Turbo.Database.Entities.Players;
 
 [Table("players")]
-[Index(nameof(Name), IsUnique = true)]
+[Index(nameof(NameKey), IsUnique = true)]
 public class PlayerEntity : TurboEntity
 {
+    private string _name = string.Empty;
+
+    /// <summary>The name as the player chose it; setting it sets <see cref="NameKey"/>.</summary>
     [Column("name")]
-    public required string Name { get; set; }
+    public required string Name
+    {
+        get => _name;
+        set
+        {
+            _name = value;
+            NameKey = PlayerNames.Key(value);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="PlayerNames.Key"/> of the name: what makes it unique and what a name is looked
+    /// up by, the same on every database whatever its collation.
+    /// </summary>
+    [Column("name_key")]
+    public string NameKey { get; private set; } = string.Empty;
 
     [Column("motto")]
     public string? Motto { get; set; }
@@ -64,6 +83,9 @@ public class PlayerEntity : TurboEntity
 
     [InverseProperty("PlayerEntity")]
     public List<PlayerBadgeEntity>? PlayerBadges { get; set; }
+
+    [InverseProperty("PlayerEntity")]
+    public List<PlayerEffectEntity>? PlayerEffects { get; set; }
 
     [InverseProperty("PlayerEntity")]
     public List<PlayerCurrencyEntity>? PlayerCurrencies { get; set; }
@@ -118,4 +140,9 @@ public class PlayerEntity : TurboEntity
 
     [InverseProperty("ReceiverPlayerEntity")]
     public List<MessengerMessageEntity>? MessengerMessagesReceived { get; set; }
+
+    /// <summary>When the row last changed; MySQL sets it on every update.</summary>
+    [Column("updated_at")]
+    [DatabaseGenerated(DatabaseGeneratedOption.Computed)]
+    public DateTime UpdatedAt { get; set; }
 }

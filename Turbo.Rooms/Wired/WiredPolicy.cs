@@ -10,15 +10,17 @@ public sealed class WiredPolicy : IWiredPolicy
     public WiredConditionModeType ConditionMode { get; set; } = WiredConditionModeType.All;
     public int ConditionThreshold { get; set; } = 1;
     public WiredEffectModeType EffectMode { get; set; } = WiredEffectModeType.All;
+    public bool ExecuteInOrder { get; set; }
     public int RandomPickCount { get; set; } = 1;
     public int RandomSkipCount { get; set; } = 0;
     public WiredAnimationModeType AnimationMode { get; set; } = WiredAnimationModeType.Smooth;
-    public int AnimationTimeMs { get; set; } = 50;
+    public int AnimationTimeMs { get; set; } = 500;
     public TimeSpan Delay { get; set; } = TimeSpan.Zero;
     public bool ShortCircuitOnFirstEffectSuccess { get; set; }
     public WiredCarryUserType? CarryUsers { get; set; }
     public WiredMovePhysicsFlags MovePhysics { get; set; } = WiredMovePhysicsFlags.None;
     public int? JumpStrength { get; set; }
     public WiredProjectileSettings? Projectile { get; set; }
+    public IWiredContractSource? CustomContract { get; set; }
     public List<IWiredTextPlaceholder> TextPlaceholders { get; } = [];
 }

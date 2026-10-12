@@ -141,6 +141,24 @@ internal sealed class InventoryFurniModule(
         return await AddAsync(items, ct);
     }
 
+    public async Task ReleaseAsync(ImmutableArray<RoomObjectId> itemIds, CancellationToken ct)
+    {
+        if (itemIds.IsDefaultOrEmpty)
+            return;
+
+        await EnsureReadyAsync(ct);
+
+        ImmutableArray<RoomObjectId> released =
+        [
+            .. itemIds.Where(itemId => _state.FurnitureById.Remove(itemId)),
+        ];
+
+        if (released.IsEmpty)
+            return;
+
+        await SendRemovedAsync(released, ct);
+    }
+
     public async Task<bool> RemoveAsync(RoomObjectId itemId, CancellationToken ct)
     {
         await EnsureReadyAsync(ct);
@@ -151,6 +169,52 @@ internal sealed class InventoryFurniModule(
         await SendRemovedAsync([itemId], ct);
 
         return true;
+    }
+
+    /// <summary>
+    /// Uses an item up (a room paper applied to a room): its row is deleted, then it leaves the
+    /// list. Only an item held here, in no room and no chest, is deleted; null otherwise.
+    /// </summary>
+    public async Task<FurnitureItemSnapshot?> ConsumeAsync(
+        RoomObjectId itemId,
+        CancellationToken ct
+    )
+    {
+        await EnsureReadyAsync(ct);
+
+        if (!_state.FurnitureById.TryGetValue(itemId, out var item))
+            return null;
+
+        int deleted;
+
+        await using (var dbCtx = await _dbCtxFactory.CreateDbContextAsync(ct))
+        {
+            deleted = await dbCtx
+                .Furnitures.Where(x =>
+                    x.Id == (int)itemId
+                    && x.PlayerEntityId == (int)PlayerId
+                    && x.RoomEntityId == null
+                    && x.ChestItemEntityId == null
+                )
+                .ExecuteDeleteAsync(ct);
+        }
+
+        if (deleted == 0)
+        {
+            _logger.LogWarning(
+                "Furniture {ItemId} is listed in the inventory of player {PlayerId} but has no row there; not used up",
+                itemId,
+                PlayerId
+            );
+
+            return null;
+        }
+
+        _state.FurnitureById.Remove(itemId);
+
+        await SendRemovedAsync([itemId], ct);
+
+        return item.GetSnapshot();
     }
 
     /// <summary>
@@ -233,6 +297,87 @@ internal sealed class InventoryFurniModule(
         }
 
         return await ListGrantedAsync(entities, pairDefinitions, ct);
+    }
+
+    /// <summary>
+    /// A present and the item it holds. The present's id exists only once its row is inserted,
+    /// so both rows go in one transaction: the item is never left loose in the inventory, nor
+    /// the present empty. Only the present is listed; the held row stays out of every inventory
+    /// query until <see cref="UnwrapPresentAsync"/>.
+    /// </summary>
+    public async Task<FurnitureItemSnapshot> GrantPresentAsync(
+        FurnitureDefinitionSnapshot present,
+        string presentExtraDataJson,
+        FurnitureDefinitionSnapshot content,
+        string? contentExtraDataJson,
+        CancellationToken ct
+    )
+    {
+        var presentEntity = new FurnitureEntity
+        {
+            PlayerEntityId = (int)PlayerId,
+            FurnitureDefinitionEntityId = present.Id,
+            ExtraData = presentExtraDataJson,
+        };
+        var contentEntity = new FurnitureEntity
+        {
+            PlayerEntityId = (int)PlayerId,
+            FurnitureDefinitionEntityId = content.Id,
+            ExtraData = contentExtraDataJson,
+        };
+
+        await using (var dbCtx = await _dbCtxFactory.CreateDbContextAsync(ct))
+        {
+            await using var tx = await dbCtx.Database.BeginTransactionAsync(ct);
+
+            dbCtx.Add(presentEntity);
+
+            await dbCtx.SaveChangesAsync(ct);
+
+            contentEntity.ChestItemEntityId = presentEntity.Id;
+            dbCtx.Add(contentEntity);
+
+            await dbCtx.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+
+        var granted = await ListGrantedAsync([presentEntity], [present], ct);
+
+        return granted[0];
+    }
+
+    /// <summary>
+    /// Releases what a present holds into this inventory. The row is re-owned to this player as
+    /// it is released: a present can change hands in a trade, and its contents go to whoever
+    /// opens it.
+    /// </summary>
+    public async Task<FurnitureItemSnapshot?> UnwrapPresentAsync(
+        RoomObjectId presentId,
+        CancellationToken ct
+    )
+    {
+        FurnitureEntity? row;
+
+        await using (var dbCtx = await _dbCtxFactory.CreateDbContextAsync(ct))
+        {
+            row = await dbCtx
+                .Furnitures.Where(x => x.ChestItemEntityId == presentId.Value)
+                .OrderBy(x => x.Id)
+                .FirstOrDefaultAsync(ct);
+
+            if (row is null)
+                return null;
+
+            row.ChestItemEntityId = null;
+            row.PlayerEntityId = (int)PlayerId;
+
+            await dbCtx.SaveChangesAsync(ct);
+        }
+
+        var definition = GetDefinitionOrThrow(row.FurnitureDefinitionEntityId);
+        var listed = await ListGrantedAsync([row], [definition], ct);
+
+        return listed[0];
     }
 
     /// <summary>
@@ -449,6 +594,7 @@ internal sealed class InventoryFurniModule(
                     ids.Contains(x.Id)
                     && x.PlayerEntityId == (int)PlayerId
                     && x.RoomEntityId == null
+                    && x.ChestItemEntityId == null
                 )
                 .ExecuteUpdateAsync(
                     up => up.SetProperty(x => x.PlayerEntityId, toPlayerId.Value),

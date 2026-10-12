@@ -13,6 +13,7 @@ using Turbo.Primitives.Rooms.Enums;
 using Turbo.Primitives.Rooms.Events.Player;
 using Turbo.Primitives.Rooms.Object;
 using Turbo.Primitives.Rooms.Snapshots;
+using Turbo.Primitives.Rooms.Snapshots.Avatars;
 
 namespace Turbo.Rooms.Grains;
 
@@ -53,6 +54,11 @@ public sealed partial class RoomGrain
             return false;
         }
     }
+
+    public Task<RoomAvatarPositionSnapshot?> GetAvatarPositionAsync(
+        PlayerId playerId,
+        CancellationToken ct
+    ) => Task.FromResult(AvatarModule.GetPlayerPosition(playerId));
 
     public Task SetPlayerBadgesAsync(
         PlayerId playerId,
@@ -136,6 +142,8 @@ public sealed partial class RoomGrain
     {
         try
         {
+            AvatarModule.TouchAvatar(ctx.PlayerId, NowMs());
+
             return await AvatarModule.WalkAvatarToAsync(ctx, targetX, targetY, ct);
         }
         catch (Exception ex)
@@ -199,6 +207,40 @@ public sealed partial class RoomGrain
                 && await AvatarModule.SetAvatarEffectAsync(avatar.ObjectId, effectId, ct)
         );
 
+    public Task<bool> SetPlayerEffectAsync(
+        ActionContext ctx,
+        int effectId,
+        ImmutableArray<int> ownedEffectIds,
+        CancellationToken ct
+    ) =>
+        RunLoggedAsync(
+            ctx,
+            "wear own effect",
+            effectId,
+            async () =>
+                AvatarModule.TryGetPlayer(ctx.PlayerId, out var avatar)
+                && await AvatarModule.SetPlayerEffectAsync(
+                    avatar.ObjectId,
+                    effectId,
+                    ownedEffectIds,
+                    ct
+                )
+        );
+
+    public Task<bool> ClearPlayerEffectIfAsync(
+        ActionContext ctx,
+        ImmutableArray<int> ownedEffectIds,
+        CancellationToken ct
+    ) =>
+        RunLoggedAsync(
+            ctx,
+            "take own effect off",
+            ownedEffectIds.Length,
+            async () =>
+                AvatarModule.TryGetPlayer(ctx.PlayerId, out var avatar)
+                && await AvatarModule.ClearPlayerEffectIfAsync(avatar.ObjectId, ownedEffectIds, ct)
+        );
+
     public Task<bool> SetAvatarExpressionAsync(
         ActionContext ctx,
         AvatarExpressionType expressionType,
@@ -257,48 +299,27 @@ public sealed partial class RoomGrain
             () => AvatarModule.DropHandItemAsync(ctx, ct)
         );
 
-    public async Task<bool> ClickAvatarAsync(
+    /// <summary>
+    /// A plain click on an avatar wakes the clicker. The "user clicks user" trigger is fired by
+    /// the client's own report of the click (<c>WiredClickUser</c>, sent while the room has one;
+    /// <see cref="WiredClickAvatarAsync"/>), not by this one.
+    /// </summary>
+    public Task<bool> ClickAvatarAsync(
         ActionContext ctx,
         RoomObjectId targetObjectId,
         CancellationToken ct
     )
     {
-        try
-        {
-            if (
-                ctx.PlayerId <= 0
-                || !AvatarModule.TryGetAvatar(targetObjectId, out _)
-                || !AvatarModule.TryGetPlayer(ctx.PlayerId, out _)
-            )
-                return false;
+        if (
+            ctx.PlayerId <= 0
+            || !AvatarModule.TryGetAvatar(targetObjectId, out _)
+            || !AvatarModule.TryGetPlayer(ctx.PlayerId, out _)
+        )
+            return Task.FromResult(false);
 
-            AvatarModule.TouchAvatar(ctx.PlayerId, NowMs());
+        AvatarModule.TouchAvatar(ctx.PlayerId, NowMs());
 
-            await PublishRoomEventAsync(
-                new PlayerClickedAvatarEvent
-                {
-                    RoomId = _state.RoomId,
-                    CausedBy = ctx,
-                    PlayerId = ctx.PlayerId,
-                    TargetObjectId = targetObjectId,
-                },
-                ct
-            );
-
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(
-                ex,
-                "Player {PlayerId} failed to click avatar {ObjectId} in room {RoomId}",
-                ctx.PlayerId,
-                targetObjectId,
-                _state.RoomId
-            );
-
-            return false;
-        }
+        return Task.FromResult(true);
     }
 
     public async Task<bool> RespectPlayerAsync(

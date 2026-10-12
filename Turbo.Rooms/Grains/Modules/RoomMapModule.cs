@@ -232,25 +232,36 @@ public sealed partial class RoomMapModule(RoomGrain roomGrain) : RoomGrainCompon
         };
     }
 
-    public Task ClickTileAsync(ActionContext ctx, int x, int y, CancellationToken ct)
+    /// <summary>
+    /// A walk click on a tile with invisible click tiles on it is a click on each of them, which
+    /// the "user clicks tile" trigger picks.
+    /// </summary>
+    public async Task ClickTileAsync(ActionContext ctx, int x, int y, CancellationToken ct)
     {
-        var idx = ToIdx(x, y);
-        var tile = _roomGrain._state.TileFlags[idx];
+        if (
+            !InBounds(x, y)
+            || !_roomGrain._state.TileFlags[ToIdx(x, y)].Has(RoomTileFlags.TileClickListener)
+        )
+            return;
 
-        if (!tile.Has(RoomTileFlags.TileClickListener))
-            return Task.CompletedTask;
+        foreach (var item in FurniModule.GetFloorItemsOnTile(ToIdx(x, y)))
+        {
+            if (item.Logic is not FurnitureInvisibleClickTileLogic)
+                continue;
 
-        return _roomGrain.PublishRoomEventAsync(
-            new PlayerClickedTileEvent()
-            {
-                PlayerId = ctx.PlayerId,
-                TileX = x,
-                TileY = y,
-                RoomId = _roomGrain.RoomId,
-                CausedBy = ctx,
-            },
-            ct
-        );
+            await _roomGrain.PublishRoomEventAsync(
+                new PlayerClickedTileEvent()
+                {
+                    PlayerId = ctx.PlayerId,
+                    TileX = x,
+                    TileY = y,
+                    FurniId = item.ObjectId,
+                    RoomId = _roomGrain.RoomId,
+                    CausedBy = ctx,
+                },
+                ct
+            );
+        }
     }
 
     public void ComputeAllTiles()
@@ -334,7 +345,7 @@ public sealed partial class RoomMapModule(RoomGrain roomGrain) : RoomGrainCompon
         _roomGrain._state.TileHighestFloorItems[id] = nextHighestItem?.ObjectId ?? NO_ITEM;
 
         var prevEncoded = _roomGrain._state.TileEncodedHeights[id];
-        var nextEncoded = EncodeHeight(nextHeight, nextFlags.Has(RoomTileFlags.StackBlocked));
+        var nextEncoded = EncodeHeight(nextHeight, nextFlags);
 
         if (prevEncoded != nextEncoded)
         {
@@ -390,9 +401,15 @@ public sealed partial class RoomMapModule(RoomGrain roomGrain) : RoomGrainCompon
         };
     }
 
-    private static short EncodeHeight(Altitude height, bool stackingBlocked)
+    /// <summary>
+    /// A tile as the client's stacking height map reads it (<c>HeightMapMessageParser</c>): -1 for no
+    /// tile at all, else the height × 256 in the low 14 bits with bit 14 set where nothing may be
+    /// stacked. A stacking blocked tile keeps its height: the client checks a moved furni's new tiles
+    /// against it and stands avatars on it.
+    /// </summary>
+    private static short EncodeHeight(Altitude height, RoomTileFlags flags)
     {
-        if (height < Altitude.Zero || stackingBlocked)
+        if (height < Altitude.Zero || flags.Has(RoomTileFlags.Disabled))
             return -1;
 
         int stackingMask = 1 << 14;
@@ -406,6 +423,9 @@ public sealed partial class RoomMapModule(RoomGrain roomGrain) : RoomGrainCompon
             raw = heightMask;
 
         int value = raw;
+
+        if (flags.Has(RoomTileFlags.StackBlocked))
+            value |= stackingMask;
 
         value &= 0x7FFF;
 
@@ -433,10 +453,7 @@ public sealed partial class RoomMapModule(RoomGrain roomGrain) : RoomGrainCompon
                     ?? (RoomTileFlags.Disabled | RoomTileFlags.Closed | RoomTileFlags.StackBlocked);
 
                 tileHeights[id] = height;
-                tileEncodedHeights[id] = EncodeHeight(
-                    height,
-                    flags.Has(RoomTileFlags.StackBlocked)
-                );
+                tileEncodedHeights[id] = EncodeHeight(height, flags);
                 tileFlags[id] = flags;
                 tileHighestFloorItems[id] = NO_ITEM;
                 tileFloorStacks[id] = [];

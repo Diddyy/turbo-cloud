@@ -9,10 +9,10 @@ using Turbo.Primitives.Guilds;
 using Turbo.Primitives.Guilds.Enums;
 using Turbo.Primitives.Guilds.Snapshots;
 using Turbo.Primitives.Messages.Outgoing.Users;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Orleans;
 using Turbo.Primitives.Players;
 using Turbo.Primitives.Players.Permissions;
-using Turbo.Primitives.Texts;
 
 namespace Turbo.Guilds.Grains;
 
@@ -46,7 +46,7 @@ internal sealed partial class GuildGrain
         if (!CanEdit(actorId))
             return false;
 
-        var clampedName = ClientText.Truncate(name, _guildConfig.NameMaxLength);
+        var clampedName = _wordFilter.FilterAndTruncate(name, _guildConfig.NameMaxLength);
 
         if (string.IsNullOrWhiteSpace(clampedName))
             return false;
@@ -55,7 +55,7 @@ internal sealed partial class GuildGrain
             entity =>
             {
                 entity.Name = clampedName;
-                entity.Description = ClientText.Truncate(
+                entity.Description = _wordFilter.FilterAndTruncate(
                     description,
                     _guildConfig.DescriptionMaxLength
                 );
@@ -179,10 +179,19 @@ internal sealed partial class GuildGrain
         if (!_guildConfig.DeletionEnabled)
             return false;
 
-        var memberIds = _state.RankByPlayerId.Keys.Select(PlayerId.Parse).ToList();
-
         if (CountOfMembers() > _guildConfig.DeletionMaxMembers)
             return false;
+
+        return await DeleteAsync(guild, ct);
+    }
+
+    /// <summary>
+    /// Deletes the group in one transaction with its roster, then tells the directory, the
+    /// homeroom, every member and the group's furni wherever it stands.
+    /// </summary>
+    private async Task<bool> DeleteAsync(GuildSnapshot guild, CancellationToken ct)
+    {
+        var memberIds = _state.RankByPlayerId.Keys.Select(PlayerId.Parse).ToList();
 
         await using (var dbCtx = await _dbCtxFactory.CreateDbContextAsync(ct))
         {
@@ -198,6 +207,27 @@ internal sealed partial class GuildGrain
                 .ToListAsync(ct);
 
             dbCtx.GuildMembers.RemoveRange(members);
+
+            // The forum goes with the group. Its row would be cascaded, but its threads, messages
+            // and read markers hang off the group id alone and would outlive it.
+            dbCtx.GuildForumMessages.RemoveRange(
+                await dbCtx
+                    .GuildForumMessages.Where(x => x.GuildEntityId == GuildId.Value)
+                    .ToListAsync(ct)
+            );
+            dbCtx.GuildForumThreads.RemoveRange(
+                await dbCtx
+                    .GuildForumThreads.Where(x => x.GuildEntityId == GuildId.Value)
+                    .ToListAsync(ct)
+            );
+            dbCtx.GuildForumReadMarkers.RemoveRange(
+                await dbCtx
+                    .GuildForumReadMarkers.Where(x => x.GuildEntityId == GuildId.Value)
+                    .ToListAsync(ct)
+            );
+            dbCtx.GuildForums.RemoveRange(
+                await dbCtx.GuildForums.Where(x => x.GuildEntityId == GuildId.Value).ToListAsync(ct)
+            );
             dbCtx.Guilds.Remove(entity);
 
             await dbCtx.SaveChangesAsync(ct);
@@ -223,6 +253,18 @@ internal sealed partial class GuildGrain
             .LogAndForget(
                 _logger,
                 "return the homeroom furni of deleted group {GuildId}",
+                guild.GuildId.Value
+            );
+
+        // The forum grain still holds the forum it read, and would go on serving its threads.
+        // Told rather than awaited, as the homeroom is: a forum request may be waiting on this
+        // grain, and this grain waiting on it would hold both until the call timed out.
+        _grainFactory
+            .GetGuildForumGrain(guild.GuildId)
+            .OnGuildDeletedAsync(CancellationToken.None)
+            .LogAndForget(
+                _logger,
+                "close the forum of deleted group {GuildId}",
                 guild.GuildId.Value
             );
 

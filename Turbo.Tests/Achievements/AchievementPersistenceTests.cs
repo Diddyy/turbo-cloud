@@ -113,96 +113,30 @@ public sealed class AchievementPersistenceTests : IDisposable
     }
 
     [Fact]
-    public async Task AchievementBadgeUpgradePreservesBadgeSharedByAnotherEntitlement()
+    public async Task AchievementBadgeUpgradeLeavesAnotherAchievementsBadgeAlone()
     {
         var (_, badgeGrain) = await NewBadgeGrainAsync();
 
-        await badgeGrain.GrantAchievementAsync(
-            achievementId: 10,
-            level: 1,
-            badgeCode: "ACH_Shared1",
-            ct: Ct
-        );
-        await badgeGrain.GrantAchievementAsync(
-            achievementId: 20,
-            level: 1,
-            badgeCode: "ACH_Shared1",
-            ct: Ct
-        );
-        await badgeGrain.GrantAchievementAsync(
-            achievementId: 10,
-            level: 2,
-            badgeCode: "ACH_Upgrade2",
-            ct: Ct
-        );
+        await badgeGrain.GrantAchievementAsync(10, 1, "ACH_Upgrade1", Ct);
+        await badgeGrain.GrantAchievementAsync(20, 1, "ACH_Other1", Ct);
+        await badgeGrain.GrantAchievementAsync(10, 2, "ACH_Upgrade2", Ct);
 
         await using var db = await _db.CreateDbContextAsync(Ct);
         (await db.PlayerBadges.Select(x => x.BadgeCode).OrderBy(x => x).ToListAsync(Ct))
             .Should()
-            .Equal("ACH_Shared1", "ACH_Upgrade2");
-        (
-            await db
-                .AchievementBadgeEntitlements.OrderBy(x => x.AchievementId)
-                .Select(x => new
-                {
-                    x.AchievementId,
-                    x.Level,
-                    x.BadgeCode,
-                })
-                .ToListAsync(Ct)
-        )
-            .Should()
-            .BeEquivalentTo([
-                new
-                {
-                    AchievementId = 10,
-                    Level = 2,
-                    BadgeCode = "ACH_Upgrade2",
-                },
-                new
-                {
-                    AchievementId = 20,
-                    Level = 1,
-                    BadgeCode = "ACH_Shared1",
-                },
-            ]);
+            .Equal("ACH_Other1", "ACH_Upgrade2");
     }
 
     [Fact]
-    public async Task AchievementEntitlementDoesNotEraseManualGrantAndManualRemovalKeepsEntitledBadge()
+    public async Task RemovingAnAchievementBadgeRemovesItLikeAnyOtherBadge()
     {
-        _db.Insert(
-            new PlayerBadgeEntity
-            {
-                Id = 1,
-                PlayerEntityId = PLAYER_ID,
-                BadgeCode = "ACH_Manual1",
-                SlotId = null,
-                ManualGrant = true,
-                PlayerEntity = null!,
-            }
-        );
         var (_, badgeGrain) = await NewBadgeGrainAsync();
+        await badgeGrain.GrantAchievementAsync(30, 1, "ACH_Earned1", Ct);
 
-        await badgeGrain.GrantAchievementAsync(
-            achievementId: 30,
-            level: 1,
-            badgeCode: "ACH_Manual1",
-            ct: Ct
-        );
-        await using (var db = await _db.CreateDbContextAsync(Ct))
-            (await db.PlayerBadges.SingleAsync(Ct)).ManualGrant.Should().BeTrue();
+        (await badgeGrain.RemoveBadgeAsync("ACH_Earned1", Ct)).Should().BeTrue();
 
-        (await badgeGrain.RemoveBadgeAsync("ACH_Manual1", Ct)).Should().BeTrue();
-        await using (var db = await _db.CreateDbContextAsync(Ct))
-        {
-            var badge = await db.PlayerBadges.SingleAsync(Ct);
-            badge.ManualGrant.Should().BeFalse();
-            badge.BadgeCode.Should().Be("ACH_Manual1");
-            (await db.AchievementBadgeEntitlements.SingleAsync(Ct))
-                .BadgeCode.Should()
-                .Be("ACH_Manual1");
-        }
+        await using var db = await _db.CreateDbContextAsync(Ct);
+        (await db.PlayerBadges.CountAsync(Ct)).Should().Be(0);
     }
 
     private async Task<(IPlayerWalletGrain Wallet, object Grain)> NewWalletAsync()

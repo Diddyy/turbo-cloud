@@ -33,7 +33,7 @@ public class WiredActionSendSignal(
         [new WiredBoolParamRule(false), new WiredBoolParamRule(false)];
 
     public override List<WiredFurniSourceType[]> GetAllowedFurniSources() =>
-        [WiredSources.PickedFurni, WiredSources.Furni];
+        [WiredSources.PickedFurni, WiredSources.SecondaryFurni];
 
     public override List<WiredPlayerSourceType[]> GetAllowedPlayerSources() => [WiredSources.Users];
 
@@ -65,19 +65,29 @@ public class WiredActionSendSignal(
         {
             foreach (var userBatch in userBatches)
             {
-                await _ctx.PublishRoomEventAsync(
-                    new WiredSignalEvent
-                    {
-                        RoomId = _roomGrain.RoomId,
-                        CausedBy = ActionContext.CreateForWired(_roomGrain.RoomId),
-                        AntennaIds = new HashSet<int>(antennas),
-                        FurniIds = furniBatch,
-                        AvatarIds = userBatch,
-                        Depth = ctx.Depth + 1,
-                        SenderId = ObjectId,
-                    },
-                    ct
-                );
+                var signal = new WiredSignalEvent
+                {
+                    RoomId = _roomGrain.RoomId,
+                    CausedBy = ActionContext.CreateForWired(_roomGrain.RoomId),
+                    AntennaIds = new HashSet<int>(antennas),
+                    FurniIds = furniBatch,
+                    AvatarIds = userBatch,
+                    Depth = ctx.Depth + 1,
+                    SenderId = ObjectId,
+                };
+
+                // The receiving stacks start from this execution's context variable values.
+                if (ctx is WiredContext sender)
+                    WiredSystem.CarryContextValues(signal, sender.ContextValues);
+
+                // And its placeholders, as they read now (variables-info #20).
+                if (ctx is WiredExecutionContext texts)
+                    WiredSystem.CarryPlaceholders(
+                        signal,
+                        await texts.ResolvePlaceholdersToCarryAsync(ct)
+                    );
+
+                await _ctx.PublishRoomEventAsync(signal, ct);
             }
         }
 

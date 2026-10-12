@@ -8,16 +8,22 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans;
+using Turbo.Catalog.Configuration;
 using Turbo.Catalog.Exceptions;
 using Turbo.Database.Context;
 using Turbo.Players.Configuration;
 using Turbo.Primitives.Catalog;
 using Turbo.Primitives.Catalog.Enums;
 using Turbo.Primitives.Catalog.Grains;
+using Turbo.Primitives.Catalog.Providers;
 using Turbo.Primitives.Catalog.Snapshots;
+using Turbo.Primitives.Furniture;
 using Turbo.Primitives.Furniture.Enums;
 using Turbo.Primitives.Furniture.Providers;
 using Turbo.Primitives.Guilds;
+using Turbo.Primitives.Hotel;
+using Turbo.Primitives.Inventory;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Orleans;
 using Turbo.Primitives.Pets;
 using Turbo.Primitives.Pets.Providers;
@@ -25,6 +31,7 @@ using Turbo.Primitives.Players.Enums;
 using Turbo.Primitives.Players.Enums.Wallet;
 using Turbo.Primitives.Players.Permissions;
 using Turbo.Primitives.Players.Wallet;
+using Turbo.Primitives.Quests;
 using Turbo.Primitives.Rooms;
 using Turbo.Primitives.Rooms.Enums;
 using Turbo.Primitives.Rooms.Snapshots;
@@ -38,10 +45,15 @@ namespace Turbo.Catalog.Grains;
 internal sealed partial class CatalogPurchaseGrain : Grain, ICatalogPurchaseGrain
 {
     private readonly IDbContextFactory<TurboDbContext> _dbCtxFactory;
+    private readonly CatalogConfig _catalogConfig;
     private readonly IGrainFactory _grainFactory;
+    private readonly IWordFilter _wordFilter;
     private readonly ICatalogService _catalogService;
     private readonly IPetBreedProvider _petBreedProvider;
     private readonly IFurnitureDefinitionProvider _definitionProvider;
+    private readonly IGiftWrappingProvider _giftWrappingProvider;
+    private readonly ICommunityGoalService _communityGoals;
+    private readonly IBonusRareService _bonusRare;
     private readonly ILogger<ICatalogPurchaseGrain> _logger;
 
     /// <summary>Days of used-up membership that earn a club gift; never zero, so it can divide.</summary>
@@ -50,19 +62,29 @@ internal sealed partial class CatalogPurchaseGrain : Grain, ICatalogPurchaseGrai
     public CatalogPurchaseGrain(
         IDbContextFactory<TurboDbContext> dbCtxFactory,
         IOptions<PlayerConfig> playerConfig,
+        IOptions<CatalogConfig> catalogConfig,
         IGrainFactory grainFactory,
+        IWordFilter wordFilter,
         ICatalogService catalogService,
         IPetBreedProvider petBreedProvider,
         IFurnitureDefinitionProvider definitionProvider,
+        IGiftWrappingProvider giftWrappingProvider,
+        ICommunityGoalService communityGoals,
+        IBonusRareService bonusRare,
         ILogger<ICatalogPurchaseGrain> logger
     )
     {
         _dbCtxFactory = dbCtxFactory;
         _giftIntervalDays = Math.Max(1, playerConfig.Value.Subscriptions.ClubGiftIntervalDays);
+        _catalogConfig = catalogConfig.Value;
         _grainFactory = grainFactory;
+        _wordFilter = wordFilter;
         _catalogService = catalogService;
         _petBreedProvider = petBreedProvider;
         _definitionProvider = definitionProvider;
+        _giftWrappingProvider = giftWrappingProvider;
+        _communityGoals = communityGoals;
+        _bonusRare = bonusRare;
         _logger = logger;
     }
 
@@ -82,6 +104,12 @@ internal sealed partial class CatalogPurchaseGrain : Grain, ICatalogPurchaseGrai
         if (!snapshot.OffersById.TryGetValue(offerId, out var offer))
             throw new CatalogPurchaseException(CatalogPurchaseErrorType.OfferNotFound);
 
+        // Hidden in the catalog editor: not shown, so not sold either, even to a client that
+        // still knows its id. Its page being hidden is not the same: the club window sells the
+        // memberships, and a hotel keeps them on a page of their own out of the navigator.
+        if (!offer.Visible)
+            throw new CatalogPurchaseException(CatalogPurchaseErrorType.OfferNotFound);
+
         // A club gift sits in the normal catalog like any other offer and is priced at nothing,
         // because it is earned rather than sold. Buying one is not a purchase this shop makes:
         // it goes through ClaimClubGiftAsync, which spends a gift the member has earned.
@@ -99,9 +127,14 @@ internal sealed partial class CatalogPurchaseGrain : Grain, ICatalogPurchaseGrai
         await ValidateClubLevelAsync(offer, ct);
 
         ValidatePetProducts(offer, extraParam);
+        extraParam = PrepareTrophyInscription(offer, extraParam);
         ValidateSubscriptionProducts(offer);
+        await ValidateEffectProductsAsync(offer, quantity, ct);
+        await ValidateBadgeProductsAsync(offer, ct);
 
         await ValidateGuildProductsAsync(offer, extraParam, ct);
+        ValidateProductStuffData(offer);
+        await ValidateBadgeDisplayProductsAsync(offer, extraParam, ct);
 
         var debitRequests = offer.ToDebitRequests(quantity);
 
@@ -112,6 +145,7 @@ internal sealed partial class CatalogPurchaseGrain : Grain, ICatalogPurchaseGrai
             await _grainFactory
                 .GetInventoryGrain(this.GetPlayerId())
                 .GrantCatalogOfferAsync(offer, extraParam, quantity, ct);
+            await GrantBadgesAsync(offer, ct);
         }
         catch
         {
@@ -128,9 +162,161 @@ internal sealed partial class CatalogPurchaseGrain : Grain, ICatalogPurchaseGrai
         // Last, because extending a membership tells the buyer it happened: a grant that threw
         // above must not leave them holding a notification for a purchase that did not land.
         await GrantSubscriptionsAsync(offer, quantity, ct);
+        await OpenGuildForumAsync(offer, extraParam, ct);
+
+        // A reward track task of that type counts the purchase (the player's grain ignores it
+        // when no task does); the purchase does not wait on it.
+        _grainFactory
+            .GetPlayerRewardTrackGrain(this.GetPlayerId())
+            .RecordActionAsync(
+                RewardTrackActionTypes.BUY_FROM_CATALOGUE,
+                "",
+                CancellationToken.None
+            )
+            .LogAndForget(
+                _logger,
+                "count a catalogue purchase of player {PlayerId}",
+                this.GetPlayerId()
+            );
+
+        if (catalogType == CatalogType.Normal)
+            await RecordReceptionProgressAsync(offer, debitRequests, quantity, ct);
 
         return offer;
     }
+
+    /// <summary>
+    /// What a purchase counts for on the reception: the items, for the running community goal when
+    /// bought from its pages, and the credits spent, for the bonus rare. The purchase is made
+    /// whatever happens here: what couldn't be counted is logged, not refunded.
+    /// </summary>
+    private async Task RecordReceptionProgressAsync(
+        CatalogOfferSnapshot offer,
+        List<WalletDebitRequest> debitRequests,
+        int quantity,
+        CancellationToken ct
+    )
+    {
+        try
+        {
+            await _communityGoals.ContributeAsync(this.GetPlayerId(), offer.PageId, quantity, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogError(
+                ex,
+                "Player {PlayerId}'s purchase of offer {OfferId} did not count for the community goal",
+                this.GetPlayerId(),
+                offer.Id
+            );
+        }
+
+        var credits = debitRequests
+            .Where(x => x.CurrencyKind.CurrencyType == CurrencyType.Credits)
+            .Sum(x => x.Amount);
+
+        try
+        {
+            await _bonusRare.RecordCatalogSpendingAsync(this.GetPlayerId(), credits, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogError(
+                ex,
+                "Player {PlayerId}'s purchase of offer {OfferId} did not count for the bonus rare",
+                this.GetPlayerId(),
+                offer.Id
+            );
+        }
+    }
+
+    /// <summary>
+    /// An effect product has to name an effect the player can still be given copies of. Refused
+    /// before any money moves, since the grant runs after the debit: an effect they already have
+    /// for good, or copies past the cap, would otherwise be charged for and refunded. Copies of
+    /// one effect across the offer's products are added up, as the grant will add them.
+    /// </summary>
+    private async Task ValidateEffectProductsAsync(
+        CatalogOfferSnapshot offer,
+        int quantity,
+        CancellationToken ct
+    )
+    {
+        var copiesByEffect = EffectProducts.CountCopies(offer.Products, quantity);
+
+        if (copiesByEffect is null)
+        {
+            _logger.LogError("An effect product of offer {OfferId} names no effect", offer.Id);
+
+            throw new CatalogPurchaseException(CatalogPurchaseErrorType.PurchaseFailed);
+        }
+
+        if (copiesByEffect.Count == 0)
+            return;
+
+        // One call for the whole offer: its effects are judged together, so a purchase that would
+        // give the first and then fail on the second is refused now and not after the first is given.
+        var result = await _grainFactory
+            .GetPlayerEffectGrain(this.GetPlayerId())
+            .CheckGiveEffectsAsync(
+                [
+                    .. copiesByEffect.Select(x => new EffectGrantRequest
+                    {
+                        EffectId = x.Key,
+                        Copies = (int)Math.Min(x.Value, int.MaxValue),
+                    }),
+                ],
+                ct
+            );
+
+        if (result != EffectGrantResult.Granted)
+            throw new CatalogPurchaseException(EffectProducts.ErrorFor(result));
+    }
+
+    /// <summary>
+    /// A badge product gives its badge, which a player has or has not: one they have already
+    /// is refused before any money moves, with the client's own "badge owned" error.
+    /// </summary>
+    private async Task ValidateBadgeProductsAsync(CatalogOfferSnapshot offer, CancellationToken ct)
+    {
+        var codes = BadgeCodesOf(offer);
+
+        if (codes.Count == 0)
+            return;
+
+        var badges = _grainFactory.GetPlayerBadgeGrain(this.GetPlayerId());
+        var owned = await Task.WhenAll(codes.Select(code => badges.HasBadgeAsync(code, ct)));
+
+        if (owned.Any(x => x))
+            throw new CatalogPurchaseException(CatalogPurchaseErrorType.BadgeOwned);
+    }
+
+    /// <summary>
+    /// Gives the offer's badges; the badge grain tells the buyer. A badge given meanwhile by
+    /// something else is had all the same, so a refusal here is not a failed purchase.
+    /// </summary>
+    private async Task GrantBadgesAsync(CatalogOfferSnapshot offer, CancellationToken ct)
+    {
+        var codes = BadgeCodesOf(offer);
+
+        if (codes.Count == 0)
+            return;
+
+        var badges = _grainFactory.GetPlayerBadgeGrain(this.GetPlayerId());
+
+        foreach (var code in codes)
+            await badges.GiveBadgeAsync(code, ct);
+    }
+
+    private static List<string> BadgeCodesOf(CatalogOfferSnapshot offer) =>
+        [
+            .. offer
+                .Products.Where(x =>
+                    x.ProductType == ProductType.Badge && !string.IsNullOrWhiteSpace(x.ExtraParam)
+                )
+                .Select(x => x.ExtraParam!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase),
+        ];
 
     /// <summary>
     /// A product that sells membership has to say how much of it. Refuse the offer before any
@@ -243,6 +429,121 @@ internal sealed partial class CatalogPurchaseGrain : Grain, ICatalogPurchaseGrai
     }
 
     /// <summary>
+    /// A forum terminal opens its group's forum when the group's owner buys it ("In order to start
+    /// a group forum the group owner must first purchase a forum terminal for the group"); a group
+    /// that has one just gets another terminal (catalog.alert.group_has_forum). The purchase is
+    /// made either way, so a failure here is logged rather than refunded.
+    /// </summary>
+    private async Task OpenGuildForumAsync(
+        CatalogOfferSnapshot offer,
+        string extraParam,
+        CancellationToken ct
+    )
+    {
+        if (
+            !offer.Products.Any(product =>
+                _definitionProvider.TryGetDefinition(product.FurniDefinitionId)?.LogicName
+                == GuildFurnitureLogicNames.FORUM
+            )
+            || !int.TryParse(
+                extraParam,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var guildId
+            )
+        )
+            return;
+
+        try
+        {
+            await _grainFactory
+                .GetGuildForumGrain(GuildId.Parse(guildId))
+                .OpenAsync(this.GetPlayerId(), ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to open the forum of group {GuildId} for player {PlayerId}",
+                guildId,
+                this.GetPlayerId()
+            );
+        }
+    }
+
+    /// <summary>
+    /// A paper, poster or song disc is what its product's extra parameter names, and one that
+    /// names nothing (or a song disc no song) would be sold as an item that shows nothing. That
+    /// is the offer's fault, not the buyer's: logged, and refused before any money moves.
+    /// </summary>
+    private void ValidateProductStuffData(CatalogOfferSnapshot offer)
+    {
+        foreach (var product in offer.Products)
+        {
+            var category = _definitionProvider
+                .TryGetDefinition(product.FurniDefinitionId)
+                ?.FurniCategory;
+
+            if (
+                category is not { } named
+                || !ProductStuffData.IsNamedByProduct(named)
+                || ProductStuffData.IsValid(named, product.ExtraParam)
+            )
+                continue;
+
+            _logger.LogError(
+                "Product {ProductId} of offer {OfferId} sells {Category} furni but its extra param {ExtraParam} names none",
+                product.Id,
+                offer.Id,
+                named,
+                product.ExtraParam
+            );
+
+            throw new CatalogPurchaseException(CatalogPurchaseErrorType.PurchaseFailed);
+        }
+    }
+
+    /// <summary>
+    /// A badge display shows the badge chosen on its catalog page, which travels in the extra
+    /// param. Only a badge the buyer owns can be shown; anything else is refused before any
+    /// money moves.
+    /// </summary>
+    private async Task ValidateBadgeDisplayProductsAsync(
+        CatalogOfferSnapshot offer,
+        string extraParam,
+        CancellationToken ct
+    )
+    {
+        var isBadgeDisplayOffer = offer.Products.Any(product =>
+            BadgeDisplayData.IsBadgeDisplay(
+                _definitionProvider.TryGetDefinition(product.FurniDefinitionId)?.LogicName
+            )
+        );
+
+        if (!isBadgeDisplayOffer)
+            return;
+
+        var badgeCode = extraParam.Trim();
+
+        if (
+            badgeCode.Length > 0
+            && await _grainFactory
+                .GetPlayerBadgeGrain(this.GetPlayerId())
+                .HasBadgeAsync(badgeCode, ct)
+        )
+            return;
+
+        _logger.LogWarning(
+            "Player {PlayerId} tried to buy badge display offer {OfferId} with badge {BadgeCode} they do not own",
+            this.GetPlayerId(),
+            offer.Id,
+            badgeCode
+        );
+
+        throw new CatalogPurchaseException(CatalogPurchaseErrorType.PurchaseFailed);
+    }
+
+    /// <summary>
     /// A pet purchase carries the name, breed and colour the buyer chose; refuse it before any
     /// money moves when it cannot be granted, since the grant runs after the debit.
     /// </summary>
@@ -280,6 +581,30 @@ internal sealed partial class CatalogPurchaseGrain : Grain, ICatalogPurchaseGrai
             if (palette is null || !palette.Sellable)
                 throw new CatalogPurchaseException(CatalogPurchaseErrorType.PurchaseFailed);
         }
+    }
+
+    /// <summary>
+    /// A trophy is engraved with the text typed on the trophy page, which travels in the extra
+    /// param: refused when too long to engrave, before any money moves, and otherwise filtered so
+    /// the inventory engraves it as it comes. Any other offer's extra param is left as sent.
+    /// </summary>
+    private string PrepareTrophyInscription(CatalogOfferSnapshot offer, string extraParam)
+    {
+        var isTrophyOffer = offer.Products.Any(product =>
+            TrophyData.IsTrophy(
+                _definitionProvider.TryGetDefinition(product.FurniDefinitionId)?.LogicName
+            )
+        );
+
+        if (!isTrophyOffer)
+            return extraParam;
+
+        var maxLength = _catalogConfig.TrophyInscriptionMaxLength;
+
+        if (extraParam.Trim().Length > maxLength)
+            throw new CatalogPurchaseException(CatalogPurchaseErrorType.PurchaseFailed);
+
+        return _wordFilter.FilterAndTruncate(extraParam, maxLength);
     }
 
     public async Task<CatalogOfferSnapshot> PurchaseRoomAdAsync(

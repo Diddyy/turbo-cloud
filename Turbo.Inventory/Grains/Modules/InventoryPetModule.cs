@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Immutable;
 using System.Globalization;
 using System.Linq;
 using System.Threading;
@@ -120,6 +121,7 @@ internal sealed class InventoryPetModule(
         int breedId,
         string color,
         int rarityLevel,
+        ImmutableArray<int> customParts,
         CancellationToken ct
     )
     {
@@ -135,6 +137,9 @@ internal sealed class InventoryPetModule(
                 BreedId = breedId,
                 Color = color,
                 RarityLevel = rarityLevel,
+                CustomParts = customParts.IsDefaultOrEmpty
+                    ? null
+                    : PetFigure.SerializeCustomParts(customParts),
                 Energy = config.PetStartEnergy,
                 Nutrition = config.PetStartNutrition,
                 WateredAt = DateTime.UtcNow,
@@ -199,12 +204,7 @@ internal sealed class InventoryPetModule(
             throw new TurboException(TurboErrorCodeEnum.CatalogProductNotFound);
         }
 
-        var config = Config;
-        var nameStatus = PetNames.Validate(
-            purchase.Name,
-            config.PetNameMinLength,
-            config.PetNameMaxLength
-        );
+        var (nameStatus, _) = ApproveName(purchase.Name);
 
         if (nameStatus != PetNameValidationType.Ok)
         {
@@ -237,10 +237,48 @@ internal sealed class InventoryPetModule(
             grant.BreedId,
             grant.Color,
             grant.RarityLevel,
+            [],
             ct
         );
 
         if (pet is null)
             throw new TurboException(TurboErrorCodeEnum.CatalogProductNotFound);
+
+        // The "you bought a pet" notification. A pet is never wrapped as a gift, so the buyer
+        // is always the one it was bought for.
+        await GrainFactory.SendComposerToPlayerAsync(
+            PlayerId,
+            new PetReceivedMessageComposer { BoughtAsGift = false, Pet = pet },
+            ct
+        );
+    }
+
+    /// <summary>
+    /// Judges a name a pet would be bought under, by the rules <see cref="ValidateProduct"/>
+    /// holds the purchase to. The info is the limit a too long or too short name broke, which the
+    /// client puts in its message; empty otherwise.
+    /// </summary>
+    public (PetNameValidationType Result, string Info) ApproveName(string name)
+    {
+        var config = Config;
+        var result = PetNames.Validate(
+            name,
+            config.PetNameMinLength,
+            config.PetNameMaxLength,
+            WordFilter
+        );
+
+        var info = result switch
+        {
+            PetNameValidationType.TooLong => config.PetNameMaxLength.ToString(
+                CultureInfo.InvariantCulture
+            ),
+            PetNameValidationType.TooShort => config.PetNameMinLength.ToString(
+                CultureInfo.InvariantCulture
+            ),
+            _ => string.Empty,
+        };
+
+        return (result, info);
     }
 }

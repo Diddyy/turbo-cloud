@@ -9,11 +9,21 @@ using Turbo.Primitives.Players.Snapshots.Permissions;
 using Turbo.Primitives.Rooms.Enums;
 using Turbo.Primitives.Rooms.Object;
 using Turbo.Primitives.Rooms.Snapshots;
+using Turbo.Primitives.Rooms.Snapshots.Avatars;
 
 namespace Turbo.Primitives.Rooms.Grains;
 
 public partial interface IRoomGrain
 {
+    /// <summary>
+    /// Where a player's avatar is, or null when the player is not in this room. A read only: it
+    /// does not count as the player's activity, so it never wakes an idle avatar.
+    /// </summary>
+    public Task<RoomAvatarPositionSnapshot?> GetAvatarPositionAsync(
+        PlayerId playerId,
+        CancellationToken ct
+    );
+
     public Task<bool> CreateAvatarFromPlayerAsync(
         ActionContext ctx,
         PlayerSummarySnapshot snapshot,
@@ -71,7 +81,7 @@ public partial interface IRoomGrain
         CancellationToken ct
     );
 
-    /// <summary>A player clicked another avatar; feeds the "user clicks user" wired trigger.</summary>
+    /// <summary>A player clicked an avatar, which wakes them.</summary>
     public Task<bool> ClickAvatarAsync(
         ActionContext ctx,
         RoomObjectId targetObjectId,
@@ -95,6 +105,29 @@ public partial interface IRoomGrain
         CancellationToken ct
     );
     public Task<bool> SetAvatarEffectAsync(ActionContext ctx, int effectId, CancellationToken ct);
+
+    /// <summary>
+    /// Puts an effect the player owns on their avatar, but only where the avatar is bare or wears
+    /// another of <paramref name="ownedEffectIds"/>. An effect the hotel applied - riding, a game
+    /// team, a freeze - is left alone. True when the avatar wears the effect afterwards.
+    /// </summary>
+    public Task<bool> SetPlayerEffectAsync(
+        ActionContext ctx,
+        int effectId,
+        ImmutableArray<int> ownedEffectIds,
+        CancellationToken ct
+    );
+
+    /// <summary>
+    /// Takes the player's own effect off their avatar: whichever of
+    /// <paramref name="ownedEffectIds"/> it wears now. An effect the hotel applied, or one worn
+    /// after the player's expired, changes nothing.
+    /// </summary>
+    public Task<bool> ClearPlayerEffectIfAsync(
+        ActionContext ctx,
+        ImmutableArray<int> ownedEffectIds,
+        CancellationToken ct
+    );
     public Task<bool> SetAvatarExpressionAsync(
         ActionContext ctx,
         AvatarExpressionType expressionType,

@@ -424,14 +424,28 @@ Grains may hold cached or in-memory state that will not reflect direct DB change
 - A video display keeps a clock, not a stream: which video, how far in, paused or not. The
   client plays it and never says when a video ends, so each video's length is config
   (`RoomConfig.YoutubePlaylists`) and the room moves on by timer.
+- A jukebox keeps a clock the same way: the client plays each song and never says when it ends,
+  so the room says which disk plays and how far in (`NowPlaying`) and moves on by timer. Its
+  disks are `IJukeboxGrain`'s, held as their owners' rows through the wired chest's holder column
+  in `held_position` order; songs are `ISongDirectoryGrain`'s. The jukebox packets name no item,
+  so they go to `IRoomGrain.InteractWithMusicPlayerAsync`. A song disk is the trax song category
+  (`SongDisks`), its song id its legacy stuff data, and the client reads that id only from the
+  item's extras. This client has no trax editor, so nothing composes or burns songs
+  ([Songs and jukeboxes](docs/sound.md)).
 - Which client packets the server still lacks is measured, not guessed:
   `python scripts/packetgap.py Room` (nitro-next is found through `NITRO_NEXT`) compares the
   composers nitro-next constructs and the messages it listens to with the handlers that do
   something and the composers something sends. Its "stub" and "unsent" are heuristics, so read
   the file before acting on a line. Still missing after this pass, each for want of
   a system rather than a handler: purchasable clothing (no clothing inventory), the guild furni
-  menu (no guilds), the room queue and spectators, `ConfigurationItemStates`, `UseObject`,
+  menu (no guilds), the room queue and spectators, `UseObject`,
   `SpecialRoomEffect` and `BotSkillListUpdate` (nothing on the server causes them).
+  `ConfigurationItemStates` carries only the Invisible Furni Controller so far; the handitem
+  blocker, the `:chooser` disabler and free furni movement are sent as off.
+- A Room Area Hider hides furni by not sending them (`RoomFurniModule.AreaHide`): the client
+  only takes the floor out of the area. Anything that sends a floor or wall item to the room
+  asks `IsHiddenByArea` first, as placing and moving do, and a change to a hider is announced
+  through `AnnounceHiddenItemsChangedAsync`.
 
 ### Teleporters
 - A teleporter (`FurnitureTeleportLogic`, logic `teleport`) is half of a pair. The pair is made
@@ -591,6 +605,27 @@ Grains may hold cached or in-memory state that will not reflect direct DB change
 - A client may claim a badge only through a request code the hotel lists
   (`BadgeConfig.RequestableBadges`); the badge code itself is never taken from the client.
 
+### Avatar effects
+- A player's effects are `player_effects` rows, one per effect id, owned by `PlayerEffectGrain`
+  (`IPlayerEffectGrain`). Write-through. Give effects through `GiveEffectAsync` and ask first with
+  `CheckGiveEffectAsync` when something is charged for them; never write the table from anywhere
+  else. The full rules, setup and the list of what is not built are in
+  [Avatar effects](docs/avatar-effects.md).
+- A running copy ends at an absolute `expires_at` (UTC, read through `TimeProvider`), never at a
+  remaining time. The expiry timer only tells the player; every call also looks for ended copies.
+- The room's avatar is the record of what is worn. The grain tells the presence which effect to
+  wear and **every effect the player owns**; the room acts only where the avatar is bare or wears
+  one of those, so an effect the hotel applied (riding, a game team, a freeze) is never
+  overwritten. When one effect expires, pass only that id to take off.
+- Ids the hotel applies itself (`EffectConfig.ReservedEffectIds`: game teams, a rider, freeze ids)
+  can never be given as an inventory effect: the room cannot tell the two sources apart. Sums
+  against the caps are made in a wide type, since a client names a purchase's quantity.
+- The client reads `secondsLeftIfActive` of exactly `-1` as "not running" and zero is never sent
+  for a running copy; `duration` is a divisor and is never zero.
+- A catalog effect product keeps its effect id in the product's extra parameter
+  (`EffectProducts`); the snapshot puts it where the client reads a sprite id. A purchase is
+  validated before the buyer is charged.
+
 ### Pets and bots
 - A pet or bot is a row (`pets`, `bots`) that is either in its owner's inventory
   (`room_id` null) or standing in a room. The hand-over is a grain call that moves the row
@@ -634,6 +669,46 @@ Grains may hold cached or in-memory state that will not reflect direct DB change
 - The flow mirrors the client's state machine: accept/unaccept while open, both accepted →
   `TradingConfirmation` (client countdown), both confirm → items move → `TradingCompleted`;
   a decline drops both acceptances. Any offer change also drops them.
+
+### Wired chests
+- A chest's contents are `IWiredChestGrain`'s (keyed by the chest's item id), not the room's.
+  The furni it holds are ordinary `furniture` rows with `chest_item_id` set, owned by the
+  chest's owner and in no room, so they keep their id, serial and extra data. Every query that
+  lists an inventory excludes them (`ChestItemEntityId == null`); a new one must too, or a
+  stored furni shows up in its owner's inventory as well as in the chest.
+- Every move commits the rows, the credits (`wired_chests`) and its log entry
+  (`wired_chest_transactions`) in one database transaction. A deposit takes rows the depositor
+  holds in no room and no chest and then tells their inventory to let go
+  (`ReleaseFurnitureAsync`, memory only, like a placement); a withdrawal re-owns rows and tells
+  the receiver's inventory (`ReceiveFurnitureAsync`). Credits leave through the wallet's
+  referenced credit (`wiredchest:<transaction id>`), and a refused credit puts them back.
+- The calls go one way: the room awaits the chest grain; the chest grain awaits inventories
+  and wallets, never a room. The player's trade window is `IWiredTradeGrain` (keyed by player);
+  the room only tells it, and it awaits the room, which carries the deposit out
+  (`DepositIntoWiredChestAsync`).
+- The settings (lock, capacity, name, appearance, notifications) are the chest furni's map
+  stuff data under the client's keys (`WiredChestData`), and the logic
+  (`FurnitureWiredChestLogic`) decides who may do what. It mirrors the grain's counts into
+  `Summary`, which conditions read without awaiting. Capacities and upgrade prices are
+  `WiredChestConfig`, shipped as the client's own config defaults; change both together.
+- Credits given by the give-currency box go to the wallet. The client files them under an
+  earnings category to claim later; this server has no earnings to claim.
+- A contract (`wired_contract_payment` / `_trade` / `_reward`) is its furni's extra data
+  (`WiredContractData`), checked against the editor's limits when saved. Initiate Transaction
+  pays a reward out at once (`RoomWiredTransactionSystem.RewardAsync`); a payment or trade
+  opens the player's `IWiredTradeGrain`, which holds the offer to the contract
+  (`WiredContractOffers`, the client's own counting) and, on confirm, has the room take the
+  payment into the chests and pay the reward out of them
+  (`IRoomGrain.CompleteWiredContractTradeAsync`). The room checks the chests can cover the
+  reward before it takes the payment. Every end, good or bad, is a
+  `WiredTransactionCompletedEvent` / `WiredTransactionFailedEvent` for the triggers.
+- Cancel Transaction only marks the trade; it ends after `WiredChestConfig.CancelGraceMs`, so
+  an Initiate Transaction on the same stack replaces it without the window closing, which is
+  what the box's usage text promises. A second Initiate while a trade is open is refused as
+  "already trading".
+- A custom contract addon puts itself on the policy (`IWiredPolicy.CustomContract`); the
+  Initiate box builds the contract from it at run time, and the transaction is then the box's,
+  which is what the triggers select.
 
 ### Wired
 - Every wired box is a `[RoomObjectLogic("wf_...")]` under `Turbo.Rooms/Object/Logic/Furniture/Floor/Wired/`
@@ -688,9 +763,8 @@ Grains may hold cached or in-memory state that will not reflect direct DB change
   layout given in full, and the slots of the variables below are reserved and deliberately
   empty.
 - **A variable with nothing behind it is not declared.** These have no system yet and are
-  reserved rather than written: user `@level`, `@is_group_admin`,
-  `@favorite_group_id`, `@team.type` and the six `@transaction.*`, because chests and
-  contracts do not exist.
+  reserved rather than written: user `@level` (the avatar level, which this hotel does not
+  have).
 - **What a variable reads is on the avatar before it is asked for.** A variable is
   synchronous and must never await a grain, so anything an account owns is put on the avatar
   when it enters (`RoomAvatarModule.LoadBadgesAsync`, `LoadHabboClubAsync`) and pushed again
@@ -713,7 +787,7 @@ Grains may hold cached or in-memory state that will not reflect direct DB change
   holds nothing of what the old one did.
 - **Wired says "user" and means any avatar.** `IWiredSelectionSet.SelectedAvatarIds` holds
   players, pets and bots alike, by room index, and every selector gathers all three; narrowing
-  to one kind is what `wf_slc_users_bytype` is for, and its mask (1 players, 2 bots, 4 pets)
+  to one kind is what `wf_slc_users_bytype` is for, and its mask (1 players, 2 pets, 4 bots, the editor's `usertype.1/.2/.4`)
   is honoured. A box reads the selection through `GetAvatars` when what it does suits any
   avatar (move, teleport, freeze, direction, hand item, a name in text) and through
   `GetPlayers` when only a player can be the subject (kick, mute, a badge, a team, a score);
@@ -879,9 +953,9 @@ Grains may hold cached or in-memory state that will not reflect direct DB change
   editor for and no box returns. The client knows codes, never furni names; the furni a code
   belongs to is looked up in the hotel's `furniture_definitions`. Do not write a box for a code
   no furni in the hotel carries: nobody can place it, and its param layout goes untested.
-  Still missing after this pass, each for want of a system rather than a box: everything
-  around chests, transactions and contracts (triggers 25 and 26, actions 45 to 48, conditions
-  45 and 46, addons 18 and 20, the `wf_storage_*` and `wf_contract_*` furni), reward tracks
+  Still missing after this pass, each for want of a system rather than a box: the chest item
+  type scanner (addon 18, which writes a context variable, and context variables hold no
+  value yet), reward tracks
   (58, 59), achievements (the enabler addon 2001 and action 51, which progresses one) and the
   web API addon (2002). Give effect (52), override height (53), the level condition (44), the
   global placeholder (2000) and variable box 8 have no furni in the hotel.
@@ -1201,6 +1275,7 @@ behaviour goes in one extension class, not in each handler.
   | `Users/GuildMemberMgmtResultExtensions` | `SendGuildMemberMgmtFailureAsync` |
   | `Userdefinedroomevents/Wiredmenu/WiredVariableHoldersExtensions` | `SendWiredVariableHoldersAsync`, which lists who holds a wired variable |
   | `Userdefinedroomevents/Wiredmenu/WiredVariablesForObjectExtensions` | `SendWiredVariablesForObjectAsync`, which lists the variables one target holds |
+  | `Help/CallForHelpExtensions` | `SubmitCallForHelpAsync` (a report from the help window, the messenger or a photo, answered with `CallForHelpResult`) and `SendMyCfhReportStatusAsync`, which lists the player's own calls for help |
 
 - **Where it does not go:**
   - A one-line grain call that encodes a rule belongs in `GrainFactoryExtensions` in

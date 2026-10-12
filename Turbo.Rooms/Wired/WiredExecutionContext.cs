@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -16,6 +17,7 @@ using Turbo.Primitives.Rooms.Object.Furniture.Wall;
 using Turbo.Primitives.Rooms.Snapshots.Wired;
 using Turbo.Primitives.Rooms.Wired;
 using Turbo.Rooms.Grains;
+using Turbo.Rooms.Object.Logic.Furniture.Floor;
 
 namespace Turbo.Rooms.Wired;
 
@@ -25,9 +27,18 @@ public sealed class WiredExecutionContext(RoomGrain roomGrain)
 {
     public DateTimeOffset RoomLocalTime => WiredSystem.GetRoomLocalTime();
 
+    /// <summary>Where "Change Variable Value" holds its change back; null when it changes at once.</summary>
+    internal WiredVariableChangeBatch? VariableChanges { get; init; }
+
     public List<WiredUserMovementSnapshot> UserMoves { get; } = [];
     public List<WiredFloorItemMovementSnapshot> FloorItemMoves { get; } = [];
     public List<WiredWallItemMovementSnapshot> WallItemMoves { get; } = [];
+
+    /// <summary>Whether each furni this action moved stood in a hidden area before its first move.</summary>
+    internal Dictionary<RoomObjectId, bool> HiddenBeforeMove { get; } = [];
+
+    // The area hiders on when this action first moved a furni (null until then).
+    private List<FurnitureAreaHideLogic>? _areaHiders;
     public List<WiredUserDirectionSnapshot> UserDirections { get; } = [];
     public List<(RoomObjectId, StuffDataSnapshot)> FloorItemStateUpdates { get; } = [];
     public List<(RoomObjectId, string)> WallItemStateUpdates { get; } = [];
@@ -61,6 +72,15 @@ public sealed class WiredExecutionContext(RoomGrain roomGrain)
                 _roomGrain.RoomId
             );
         }
+    }
+
+    private void NoteHiddenBeforeMove(IRoomItem item)
+    {
+        if (HiddenBeforeMove.ContainsKey(item.ObjectId))
+            return;
+
+        _areaHiders ??= FurniModule.GetActiveAreaHiders();
+        HiddenBeforeMove[item.ObjectId] = _areaHiders.Any(x => x.Hides(item));
     }
 
     public async Task<bool> TryMoveFloorItemAsync(
@@ -106,6 +126,8 @@ public sealed class WiredExecutionContext(RoomGrain roomGrain)
                 && WiredDirections.Resolve(system, flightX, flightY) is { } facing
             )
                 rot = facing.Rotate(projectile.RotationOffset);
+
+            NoteHiddenBeforeMove(floorItem);
 
             // Through the furni module, so the item's logic hears of the move as it would from a
             // player; only the announcing stays here, batched into the action's one packet.
@@ -217,6 +239,8 @@ public sealed class WiredExecutionContext(RoomGrain roomGrain)
                 wallItem.WallOffset
             );
 
+            NoteHiddenBeforeMove(wallItem);
+
             if (
                 await FurniModule.MoveWallItemAsync(
                     AsActionContext(),
@@ -260,10 +284,17 @@ public sealed class WiredExecutionContext(RoomGrain roomGrain)
         }
     }
 
-    public async Task<bool> ProcessUserMovementAsync(
+    public Task<bool> ProcessUserMovementAsync(
         IRoomAvatar avatar,
         int tileIdx,
         SlideAvatarMoveType moveType
+    ) => ProcessUserMovementAsync(avatar, tileIdx, moveType, instant: false);
+
+    public async Task<bool> ProcessUserMovementAsync(
+        IRoomAvatar avatar,
+        int tileIdx,
+        SlideAvatarMoveType moveType,
+        bool instant
     )
     {
         if (avatar is null)
@@ -281,9 +312,18 @@ public sealed class WiredExecutionContext(RoomGrain roomGrain)
             if (sourceIdx == tileIdx)
                 return true;
 
+            // A teleport puts the avatar down at once instead of walking it there, so users already
+            // on the tile are no obstacle: every user a selection picked can be teleported onto
+            // one furni. A slide or a move still stops at a user unless the movement physics let
+            // it through, and a closed tile or a furni that cannot be stood on refuses either.
             if (
                 !Policy.MovePhysics.HasFlag(WiredMovePhysicsFlags.MoveThroughUsers)
-                && !map.CanAvatarWalk(avatar, tileIdx, true)
+                && !map.CanAvatarWalk(
+                    avatar,
+                    tileIdx,
+                    true,
+                    ignoreAvatars: moveType == SlideAvatarMoveType.None
+                )
             )
                 return false;
 
@@ -311,7 +351,7 @@ public sealed class WiredExecutionContext(RoomGrain roomGrain)
                     TargetY = avatar.Y,
                     TargetZ = avatar.Z,
                     MoveType = moveType,
-                    AnimationTime = GetAnimationTime(),
+                    AnimationTime = instant ? 0 : GetAnimationTime(),
                     BodyDirection = avatar.Rotation,
                     HeadDirection = avatar.HeadRotation,
                     JumpPower = Policy.JumpStrength ?? avatar.JumpPower,
@@ -355,9 +395,48 @@ public sealed class WiredExecutionContext(RoomGrain roomGrain)
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// The placeholders a signal or stack call from here carries on: what this stack's own read
+    /// now, over the ones it was carried.
+    /// </summary>
+    public async Task<Dictionary<string, string>> ResolvePlaceholdersToCarryAsync(
+        CancellationToken ct
+    )
+    {
+        var carried = new Dictionary<string, string>(CarriedPlaceholders, StringComparer.Ordinal);
+
+        foreach (var placeholder in Policy.TextPlaceholders)
+        {
+            if (placeholder.Token.Length == 0)
+                continue;
+
+            try
+            {
+                carried[placeholder.Token] = await placeholder.ApplyAsync(
+                    this,
+                    placeholder.Token,
+                    ct
+                );
+            }
+            catch (Exception ex)
+            {
+                _roomGrain._logger.LogWarning(
+                    ex,
+                    "A wired text placeholder failed in room {RoomId}",
+                    _roomGrain.RoomId
+                );
+            }
+        }
+
+        return carried;
+    }
+
     public async Task<string> FormatTextAsync(string text, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(text) || Policy.TextPlaceholders.Count == 0)
+        if (
+            string.IsNullOrEmpty(text)
+            || (Policy.TextPlaceholders.Count == 0 && CarriedPlaceholders.Count == 0)
+        )
             return text ?? string.Empty;
 
         foreach (var placeholder in Policy.TextPlaceholders)
@@ -375,6 +454,9 @@ public sealed class WiredExecutionContext(RoomGrain roomGrain)
                 );
             }
         }
+
+        foreach (var (token, value) in CarriedPlaceholders)
+            text = text.Replace(token, value, StringComparison.Ordinal);
 
         // Placeholders expand the text, and a box can repeat one many times over.
         // Cut by hand rather than through ClientText.Truncate, which also trims: the text is

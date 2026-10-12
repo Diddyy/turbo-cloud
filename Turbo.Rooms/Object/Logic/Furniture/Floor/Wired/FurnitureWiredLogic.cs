@@ -20,6 +20,7 @@ using Turbo.Primitives.Rooms.Enums.Wired;
 using Turbo.Primitives.Rooms.Events.Wired;
 using Turbo.Primitives.Rooms.Object;
 using Turbo.Primitives.Rooms.Object.Avatars;
+using Turbo.Primitives.Rooms.Object.Furniture;
 using Turbo.Primitives.Rooms.Object.Furniture.Floor;
 using Turbo.Primitives.Rooms.Snapshots.Wired;
 using Turbo.Primitives.Rooms.Snapshots.Wired.Variables;
@@ -54,6 +55,13 @@ public abstract partial class FurnitureWiredLogic(
         await FillInternalDataAsync(ct);
     }
 
+    /// <summary>
+    /// Loads the box if the wired tick has not reached its stack yet (it was just placed, or the
+    /// room has only just woken), so the editor can open or save it straight away.
+    /// </summary>
+    public Task EnsureWiredLoadedAsync(CancellationToken ct) =>
+        _wiredData is null ? LoadWiredAsync(ct) : Task.CompletedTask;
+
     public Task FlashActivationStateAsync(CancellationToken ct) =>
         SetStateAsync(GetState() == 1 ? 0 : 1);
 
@@ -72,6 +80,7 @@ public abstract partial class FurnitureWiredLogic(
         {
             _wiredData.StuffIds = stuffIds;
             _stuffIds.Adopt(stuffIds);
+            _snapshot = null;
 
             _wiredData.MarkDirty();
         }
@@ -88,6 +97,7 @@ public abstract partial class FurnitureWiredLogic(
         {
             _wiredData.StuffIds2 = stuffIds;
             _stuffIds2.Adopt(stuffIds);
+            _snapshot = null;
 
             _wiredData.MarkDirty();
         }
@@ -149,6 +159,42 @@ public abstract partial class FurnitureWiredLogic(
     public virtual RoomControllerType MinimumControllerLevelToSave => RoomControllerType.None;
 
     public virtual List<WiredVariableContextSnapshot> GetWiredContextSnapshots() => [];
+
+    /// <summary>
+    /// The user sources the editor offers: the box's own, and after the triggering user of each
+    /// slot that has one, the users a trigger on the same stack names
+    /// (<see cref="IWiredUserSourceProvider"/>).
+    /// </summary>
+    public List<WiredPlayerSourceType[]> GetOfferedPlayerSources()
+    {
+        var allowed = GetAllowedPlayerSources();
+        var provided = FurniModule
+            .GetFloorItemsOnTile(_ctx.GetTileIdx())
+            .Select(item => item.Logic)
+            .OfType<IWiredUserSourceProvider>()
+            .SelectMany(trigger => trigger.ProvidedUserSources)
+            .Distinct()
+            .ToList();
+
+        if (provided.Count == 0)
+            return allowed;
+
+        return
+        [
+            .. allowed.Select(slot =>
+            {
+                var index = System.Array.IndexOf(slot, WiredPlayerSourceType.TriggeredUser);
+
+                if (index < 0)
+                    return slot;
+
+                var extra = provided.Where(x => !slot.Contains(x));
+
+                return (WiredPlayerSourceType[])
+                    [.. slot[..(index + 1)], .. extra, .. slot[(index + 1)..]];
+            }),
+        ];
+    }
 
     public List<WiredFurniSourceType[]> GetFurniSources() =>
         StoredOrDefault(_wiredData.FurniSources, GetDefaultFurniSources());
@@ -286,6 +332,9 @@ public abstract partial class FurnitureWiredLogic(
                 return false;
             }
 
+            RefuseUnpickableFurni(update.StuffIds);
+            RefuseUnpickableFurni(update.StuffIds2);
+
             if (GetValidStuffIds(update.StuffIds, out var validStuffIds))
                 stuffIds = validStuffIds;
 
@@ -319,7 +368,7 @@ public abstract partial class FurnitureWiredLogic(
             }
 
             index = 0;
-            var validPlayerSources = GetAllowedPlayerSources();
+            var validPlayerSources = GetOfferedPlayerSources();
 
             foreach (var source in GetDefaultPlayerSources())
             {
@@ -390,12 +439,20 @@ public abstract partial class FurnitureWiredLogic(
 
             _wiredData.MarkDirty();
 
+            // The editor reopened straight after a save, and a stack run before the wired tick
+            // reloads this box, read the snapshot: it has to be this save, not the one before.
+            _snapshot = null;
+
             if (KeepsFurniSnapshot)
                 CaptureFurniSnapshot(stuffIds);
 
             await OnWiredStackChangedAsync(ctx, [_ctx.GetTileIdx()], ct);
 
             return true;
+        }
+        catch (WiredSaveRefusedException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -469,6 +526,9 @@ public abstract partial class FurnitureWiredLogic(
     private static object CreateDefaultSpecific(Type specType) =>
         specType == typeof(string) ? string.Empty : Activator.CreateInstance(specType)!;
 
+    /// <summary>The most ints a save may carry; a box whose editor sends more says so.</summary>
+    protected virtual int GetMaxIntParams() => _roomGrain._wiredConfig.MaxIntParams;
+
     protected virtual bool TryNormalizeIntParams(List<int> proposed, out List<int> normalized)
     {
         normalized = [];
@@ -476,7 +536,7 @@ public abstract partial class FurnitureWiredLogic(
         var fixedRules = GetIntParamRules();
         var tailRule = GetIntParamTailRule();
         var min = fixedRules.Count;
-        var max = Math.Max(min, _roomGrain._wiredConfig.MaxIntParams);
+        var max = Math.Max(min, GetMaxIntParams());
 
         if (proposed.Count > max)
             return false;
@@ -536,6 +596,31 @@ public abstract partial class FurnitureWiredLogic(
         return true;
     }
 
+    /// <summary>
+    /// Whether this box may pick the furni at all. A box that takes only one kind (click tiles,
+    /// chests, contracts) says which here and names the hotel's refusal in
+    /// <see cref="PickRefusedErrorKey"/>; a save picking anything else is refused with it, and a
+    /// stored pick of anything else is dropped.
+    /// </summary>
+    protected virtual bool CanPickFurni(IRoomItem item) => true;
+
+    /// <summary>The <c>wiredfurni.error.require_*</c> text for a pick <see cref="CanPickFurni"/> refuses.</summary>
+    protected virtual string? PickRefusedErrorKey => null;
+
+    private void RefuseUnpickableFurni(List<int> proposed)
+    {
+        foreach (var proposedId in proposed)
+        {
+            if (
+                FurniModule.TryGetItem(
+                    WiredFurniIds.FromClient(FurniModule, proposedId),
+                    out var item
+                ) && !CanPickFurni(item)
+            )
+                throw new WiredSaveRefusedException(PickRefusedErrorKey ?? WiredSaveErrors.GENERIC);
+        }
+    }
+
     protected virtual bool GetValidStuffIds(List<int> proposed, out List<int> stuffIds)
     {
         stuffIds = [];
@@ -543,12 +628,14 @@ public abstract partial class FurnitureWiredLogic(
         var limit = _roomGrain._wiredConfig.SelectedItemsLimit;
         var seen = new HashSet<int>();
 
-        foreach (var id in proposed)
+        foreach (var proposedId in proposed)
         {
             if (stuffIds.Count >= limit)
                 break;
 
-            if (!FurniModule.HasItem(id) || !seen.Add(id))
+            var id = WiredFurniIds.FromClient(FurniModule, proposedId);
+
+            if (!FurniModule.TryGetItem(id, out var item) || !CanPickFurni(item) || !seen.Add(id))
                 continue;
 
             stuffIds.Add(id);
@@ -629,7 +716,7 @@ public abstract partial class FurnitureWiredLogic(
                 _wiredData = new WiredData();
             }
 
-            _wiredData.AttatchRules(GetIntParamRules());
+            _wiredData.AttatchRules(GetIntParamRules(), GetIntParamTailRule());
         }
 
         if (TryNormalizeIntParams(_wiredData.IntParams, out var normalizedIntParams))
@@ -643,12 +730,14 @@ public abstract partial class FurnitureWiredLogic(
         else
         {
             // Stored params no longer fit the rules (a rule was tightened, or the row was edited
-            // by hand). They never reach the box unchecked: it starts over from its defaults.
-            _roomGrain._logger.LogWarning(
-                "Wired item {ItemId} in room {RoomId} held int params that fail its rules; reset to defaults",
-                _ctx.ObjectId,
-                _ctx.RoomId
-            );
+            // by hand). They never reach the box unchecked: it starts over from its defaults. A
+            // box never saved has none stored, and taking its defaults is not news.
+            if (_wiredData.IntParams.Count > 0)
+                _roomGrain._logger.LogWarning(
+                    "Wired item {ItemId} in room {RoomId} held int params that fail its rules; reset to defaults",
+                    _ctx.ObjectId,
+                    _ctx.RoomId
+                );
 
             _wiredData.IntParams = GetDefaultIntParams();
             _wiredData.MarkDirty();
@@ -730,16 +819,27 @@ public abstract partial class FurnitureWiredLogic(
 
     public WiredDataSnapshot GetSnapshot() => _snapshot ??= BuildSnapshot();
 
+    /// <summary>
+    /// Fetches what the editor shows that the box cannot read synchronously, before its editor is
+    /// sent: "From Another Room" lists the variables the owner's other rooms share. True when it
+    /// changed what <see cref="GetWiredContextSnapshots"/> returns.
+    /// </summary>
+    public virtual Task<bool> RefreshEditorContextAsync(CancellationToken ct) =>
+        Task.FromResult(false);
+
+    /// <summary>Drops the cached editor snapshot, so the next read builds it again.</summary>
+    public void InvalidateSnapshot() => _snapshot = null;
+
     protected virtual WiredDataSnapshot BuildSnapshot() =>
         new()
         {
             WiredType = WiredType,
             FurniLimit = _roomGrain._wiredConfig.SelectedItemsLimit,
             StuffIds = GetValidStuffIds(_wiredData.StuffIds, out var validStuffIds)
-                ? validStuffIds
+                ? WiredFurniIds.ToClient(FurniModule, validStuffIds)
                 : [],
             StuffIds2 = GetValidStuffIds(_wiredData.StuffIds2, out var validStuffIds2)
-                ? validStuffIds2
+                ? WiredFurniIds.ToClient(FurniModule, validStuffIds2)
                 : [],
             StuffTypeId = _ctx.Definition.SpriteId,
             Id = _ctx.ObjectId,
@@ -755,7 +855,7 @@ public abstract partial class FurnitureWiredLogic(
             AmountFurniSelections = [],
             AllowWallFurni = _roomGrain._wiredConfig.AllowWallFurni,
             AllowedFurniSources = GetAllowedFurniSources(),
-            AllowedPlayerSources = GetAllowedPlayerSources(),
+            AllowedPlayerSources = GetOfferedPlayerSources(),
             DefaultFurniSources = GetDefaultFurniSources(),
             DefaultPlayerSources = GetDefaultPlayerSources(),
             DefinitionSpecifics = GetDefinitionSpecifics(),

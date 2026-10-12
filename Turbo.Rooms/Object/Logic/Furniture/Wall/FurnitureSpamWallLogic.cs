@@ -9,6 +9,7 @@ using Turbo.Primitives.Furniture.Interactions;
 using Turbo.Primitives.Furniture.Providers;
 using Turbo.Primitives.Furniture.StuffData;
 using Turbo.Primitives.Messages.Outgoing.Room.Furniture;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Orleans;
 using Turbo.Primitives.Rooms;
 using Turbo.Primitives.Rooms.Enums;
@@ -81,7 +82,9 @@ public class FurnitureSpamWallLogic(
 
         var stuffData = _stuffDataFactory.CreateStuffData(StuffDataType.LegacyKey);
 
-        stuffData.SetState(StickieColors.Compose(note.Color.ToUpperInvariant(), note.Text));
+        var text = _roomGrain._wordFilter.FilterAndTruncate(note.Text, config.StickieTextMaxLength);
+
+        stuffData.SetState(StickieColors.Compose(note.Color.ToUpperInvariant(), text));
 
         var extraDataJson = JsonSerializer.Serialize(
             new { stuff = JsonSerializer.SerializeToNode(stuffData, stuffData.GetType()) }

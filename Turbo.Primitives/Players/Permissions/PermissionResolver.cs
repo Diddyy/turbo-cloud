@@ -17,7 +17,9 @@ namespace Turbo.Primitives.Players.Permissions;
 /// (name breaks a tie, so the order is stable). Within a source the most specific assignment
 /// wins — the node itself, then the longest wildcard — then a temporary assignment beats a
 /// permanent one (a sanction outranks what it suspends, and the permanent value is still there
-/// when it runs out), then a denial beats a grant. No opinion anywhere: denied, unless the node
+/// when it runs out), then a denial beats a grant. A node registered
+/// <see cref="PermissionNodeDefinition.ExplicitOnly"/> ignores wildcard assignments altogether.
+/// No opinion anywhere: denied, unless the node
 /// was registered <see cref="PermissionNodeDefinition.GrantedByDefault"/>. Expired
 /// assignments and memberships do not take part. Meta resolves by the selection its key was
 /// registered with; the default takes the first source in the same order, temporary first.
@@ -46,7 +48,7 @@ public static class PermissionResolver
 
             foreach (var source in sources)
             {
-                var match = BestMatch(source, node);
+                var match = BestMatch(source, node, definition.ExplicitOnly);
 
                 if (match is null)
                     continue;
@@ -127,10 +129,12 @@ public static class PermissionResolver
 
         PermissionAssignmentSourceSnapshot? decision = null;
         var overridden = ImmutableArray.CreateBuilder<PermissionAssignmentSourceSnapshot>();
+        var explicitOnly =
+            registry.Nodes.TryGetValue(node, out var registered) && registered.ExplicitOnly;
 
         foreach (var source in sources)
         {
-            var match = BestMatch(source, node);
+            var match = BestMatch(source, node, explicitOnly);
 
             if (match is null)
                 continue;
@@ -228,9 +232,11 @@ public static class PermissionResolver
                 null,
                 [],
                 [.. player.Nodes.Where(x => IsLive(x.ExpiresAt))],
-                [.. player.Meta.Where(x => IsLive(x.ExpiresAt))]
+                [.. player.Meta.Where(x => IsLive(x.ExpiresAt))],
+                null
             ),
         };
+        var reachedUntil = ReachedUntil(groups, player, now);
 
         // Breadth first from every held group at once, so each group is reached along its
         // shortest path and counted once, however many paths lead to it; the visited set also
@@ -267,7 +273,8 @@ public static class PermissionResolver
                     group,
                     path,
                     [.. group.Nodes.Where(x => IsLive(x.ExpiresAt))],
-                    [.. group.Meta.Where(x => IsLive(x.ExpiresAt))]
+                    [.. group.Meta.Where(x => IsLive(x.ExpiresAt))],
+                    reachedUntil.GetValueOrDefault(group.Id)
                 )
             );
 
@@ -286,13 +293,72 @@ public static class PermissionResolver
         return sources;
     }
 
-    private static PermissionNodeAssignmentSnapshot? BestMatch(Source source, string node)
+    /// <summary>
+    /// How long each group stays reached: the latest end among the live memberships that lead to
+    /// it, through any number of parents; null (for ever) when a permanent one does, as the
+    /// default group always is.
+    /// </summary>
+    private static Dictionary<int, DateTime?> ReachedUntil(
+        IReadOnlyDictionary<int, PermissionGroupSnapshot> groups,
+        PlayerPermissionAssignmentsSnapshot player,
+        DateTime now
+    )
+    {
+        var until = new Dictionary<int, DateTime?>();
+        var roots = player
+            .Groups.Where(x => x.ExpiresAt is not { } at || at > now)
+            .Select(x => (x.GroupId, x.ExpiresAt))
+            .Concat(
+                groups
+                    .Values.Where(x => x.Name == PermissionGroupNames.DEFAULT)
+                    .Select(x => (GroupId: x.Id, ExpiresAt: (DateTime?)null))
+            );
+
+        foreach (var (rootId, expiresAt) in roots)
+        {
+            var stack = new Stack<int>([rootId]);
+            var seen = new HashSet<int>();
+
+            while (stack.Count > 0)
+            {
+                var groupId = stack.Pop();
+
+                if (!seen.Add(groupId) || !groups.TryGetValue(groupId, out var group))
+                    continue;
+
+                // Null is for ever, so it wins; otherwise the later end does.
+                until[groupId] = until.TryGetValue(groupId, out var known)
+                    ? (
+                        known is null || expiresAt is null
+                            ? null
+                            : Later(known.Value, expiresAt.Value)
+                    )
+                    : expiresAt;
+
+                foreach (var parentId in group.ParentIds)
+                    stack.Push(parentId);
+            }
+        }
+
+        return until;
+
+        static DateTime Later(DateTime a, DateTime b) => a > b ? a : b;
+    }
+
+    private static PermissionNodeAssignmentSnapshot? BestMatch(
+        Source source,
+        string node,
+        bool explicitOnly
+    )
     {
         PermissionNodeAssignmentSnapshot? best = null;
         var bestSpecificity = PermissionNodeFormat.NO_MATCH;
 
         foreach (var assignment in source.Nodes)
         {
+            if (explicitOnly && PermissionNodeFormat.IsWildcard(assignment.Node))
+                continue;
+
             var specificity = PermissionNodeFormat.Specificity(assignment.Node, node);
 
             if (specificity == PermissionNodeFormat.NO_MATCH)
@@ -417,13 +483,22 @@ public static class PermissionResolver
             Node = assignment.Node,
             Value = assignment.Value,
             ExpiresAt = assignment.ExpiresAt,
+            GrantedUntil = (assignment.ExpiresAt, source.ReachedUntil) switch
+            {
+                ({ } own, { } reached) => own < reached ? own : reached,
+                (var own, var reached) => own ?? reached,
+            },
         };
 
-    /// <summary>One place assignments come from; <see cref="Group"/> is null for the player.</summary>
+    /// <summary>
+    /// One place assignments come from; <see cref="Group"/> is null for the player.
+    /// <see cref="ReachedUntil"/> is when the player stops reaching the group, null for ever.
+    /// </summary>
     private sealed record Source(
         PermissionGroupSnapshot? Group,
         ImmutableArray<string> Path,
         ImmutableArray<PermissionNodeAssignmentSnapshot> Nodes,
-        ImmutableArray<PermissionMetaAssignmentSnapshot> Meta
+        ImmutableArray<PermissionMetaAssignmentSnapshot> Meta,
+        DateTime? ReachedUntil
     );
 }

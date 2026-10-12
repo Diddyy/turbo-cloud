@@ -64,7 +64,12 @@ public class FurniturePetPackageLogic(IStuffDataFactory stuffDataFactory, IRoomF
             return Reject(ctx, interaction, "package holds no pet");
 
         var config = _roomGrain._petConfig;
-        var status = PetNames.Validate(open.Name, config.NameMinLength, config.NameMaxLength);
+        var status = PetNames.Validate(
+            open.Name,
+            config.NameMinLength,
+            config.NameMaxLength,
+            _roomGrain._wordFilter
+        );
 
         if (status != PetNameValidationType.Ok)
         {
@@ -87,6 +92,7 @@ public class FurniturePetPackageLogic(IStuffDataFactory stuffDataFactory, IRoomF
                 palette?.BreedId ?? contents.PaletteId,
                 contents.Color.ToUpperInvariant(),
                 palette?.RarityLevel ?? 0,
+                [],
                 ct
             );
 

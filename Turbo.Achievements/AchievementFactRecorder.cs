@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using Turbo.Database.Achievements;
@@ -9,8 +10,14 @@ using Turbo.Primitives.Players;
 
 namespace Turbo.Achievements;
 
-public sealed class AchievementFactRecorder(IAchievementCatalog catalog) : IAchievementFactRecorder
+/// <param name="listeners">Told of every valid fact before the catalog decides whether to keep it.</param>
+public sealed class AchievementFactRecorder(
+    IAchievementCatalog catalog,
+    IEnumerable<IAchievementFactListener>? listeners = null
+) : IAchievementFactRecorder
 {
+    private readonly IAchievementFactListener[] _listeners = listeners?.ToArray() ?? [];
+
     public void Record(TurboDbContext db, PlayerId playerId, AchievementFact fact)
     {
         ArgumentNullException.ThrowIfNull(db);
@@ -26,19 +33,21 @@ public sealed class AchievementFactRecorder(IAchievementCatalog catalog) : IAchi
             || fact.OccurredAtUtc > DateTime.UtcNow.AddMinutes(1)
         )
             throw new ArgumentException("Invalid authoritative achievement fact.", nameof(fact));
+        foreach (var listener in _listeners)
+            listener.OnFactRecorded(playerId, fact);
         var targets = catalog
             .Current.Where(x =>
-                x.Enabled
-                && !x.Archived
+                x.Accrues(fact.OccurredAtUtc)
                 && x.Source == fact.Source
                 && x.SourceVersion == fact.Version
+                && x.Matches(fact)
             )
             .ToArray();
         foreach (var target in targets)
         {
             if (
                 target.Reducer == Turbo.Primitives.Achievements.Enums.AchievementReducer.Distinct
-                && string.IsNullOrWhiteSpace(fact.Value)
+                && string.IsNullOrWhiteSpace(target.CountedValue(fact))
             )
                 throw new ArgumentException("Distinct facts require a stable value.", nameof(fact));
             if (
@@ -57,6 +66,11 @@ public sealed class AchievementFactRecorder(IAchievementCatalog catalog) : IAchi
                     nameof(fact)
                 );
         }
+        // A fact nothing listens to is never needed: bindings are frozen when a fact is admitted, so
+        // a definition added later would not have counted it anyway. Skipping it keeps a hotel with
+        // a small catalog from storing, say, an online interval per player every half minute.
+        if (targets.Length == 0)
+            return;
         db.AchievementFacts.Add(
             new AchievementFactEntity
             {
@@ -65,7 +79,9 @@ public sealed class AchievementFactRecorder(IAchievementCatalog catalog) : IAchi
                 OperationId = fact.OperationId,
                 OccurredAtUtc = fact.OccurredAtUtc,
                 FactJson = JsonSerializer.Serialize(fact),
-                BindingsJson = JsonSerializer.Serialize(targets),
+                BindingsJson = JsonSerializer.Serialize(
+                    targets.Select(x => new AchievementBinding(x.Id, x.Revision))
+                ),
             }
         );
     }

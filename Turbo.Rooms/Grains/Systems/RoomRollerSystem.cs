@@ -7,6 +7,8 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Turbo.Primitives.Messages.Outgoing.Room.Engine;
 using Turbo.Primitives.Networking;
+using Turbo.Primitives.Orleans;
+using Turbo.Primitives.Players;
 using Turbo.Primitives.Rooms;
 using Turbo.Primitives.Rooms.Enums;
 using Turbo.Primitives.Rooms.Events;
@@ -181,16 +183,61 @@ public sealed class RoomRollerSystem(RoomGrain roomGrain)
         if (currentPlans.Count == 0)
             return Task.CompletedTask;
         var composers = ImmutableArray.CreateBuilder<IComposer>();
+        var hiddenChanges = new List<IComposer>();
 
-        foreach (var plan in currentPlans)
+        foreach (var planned in currentPlans)
         {
+            var plan = planned;
             var (fromX, fromY) = MapModule.GetTileXY(plan.FromIdx);
             var (toX, toY) = MapModule.GetTileXY(plan.ToIdx);
+            var hiddenFurni = new List<RollerMovedObjectSnapshot>();
 
             foreach (var item in plan.MovedFloorItems)
-                MapModule.RollFloorItem((IRoomFloorItem)item.RoomObject, plan.ToIdx, item.ToZ);
-            foreach (var avatar in plan.MovedAvatars)
-                MapModule.RollAvatar((IRoomAvatar)avatar.RoomObject, plan.ToIdx, avatar.ToZ);
+            {
+                var floorItem = (IRoomFloorItem)item.RoomObject;
+                var wasHidden = FurniModule.IsHiddenByArea(floorItem);
+
+                MapModule.RollFloorItem(floorItem, plan.ToIdx, item.ToZ);
+
+                // A furni an area hider hides rides like a player's move: left out of the
+                // slide while hidden, taken away when it rolls into an area, sent again when
+                // it rolls out.
+                var isHidden = FurniModule.IsHiddenByArea(floorItem);
+
+                if (!wasHidden && !isHidden)
+                    continue;
+
+                if (wasHidden != isHidden)
+                    hiddenChanges.Add(
+                        isHidden
+                            ? floorItem.GetRemoveComposer(PlayerId.Invalid)
+                            : floorItem.GetAddComposer()
+                    );
+
+                hiddenFurni.Add(item);
+            }
+
+            if (hiddenFurni.Count > 0)
+                plan = plan with
+                {
+                    MovedFloorItems = [.. plan.MovedFloorItems.Except(hiddenFurni)],
+                };
+            foreach (var moved in plan.MovedAvatars)
+            {
+                var avatar = (IRoomAvatar)moved.RoomObject;
+                var (avatarFromX, avatarFromY) = (avatar.X, avatar.Y);
+
+                MapModule.RollAvatar(avatar, plan.ToIdx, moved.ToZ);
+
+                // Queued: this tick's slide packets must not wait on a listener.
+                AvatarModule
+                    .PublishMovedAsync(avatar, avatarFromX, avatarFromY, CancellationToken.None)
+                    .LogAndForget(
+                        _roomGrain._logger,
+                        "publish an avatar move in room {RoomId}",
+                        _roomGrain.RoomId
+                    );
+            }
 
             // The furni ride with the first avatar's packet, or alone when nobody is on the
             // roller; each further avatar gets a packet of its own.
@@ -203,7 +250,9 @@ public sealed class RoomRollerSystem(RoomGrain roomGrain)
                 );
         }
 
-        // Every slide of the tick as one room message, in the order the moves were made.
+        // Every slide of the tick as one room message, in the order the moves were made; what
+        // rolled into or out of a hidden area goes or comes back after the slides.
+        composers.AddRange(hiddenChanges);
         _roomGrain.SendComposersToRoomAndForget(composers.ToImmutable());
         return Task.CompletedTask;
     }

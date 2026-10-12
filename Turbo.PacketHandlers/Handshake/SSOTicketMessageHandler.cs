@@ -5,8 +5,10 @@ using Orleans;
 using Turbo.Messages.Registry;
 using Turbo.Primitives.Authentication;
 using Turbo.Primitives.Availability;
+using Turbo.Primitives.Figures;
 using Turbo.Primitives.Messages.Incoming.Handshake;
 using Turbo.Primitives.Messages.Outgoing.Availability;
+using Turbo.Primitives.Messages.Outgoing.Callforhelp;
 using Turbo.Primitives.Messages.Outgoing.Handshake;
 using Turbo.Primitives.Messages.Outgoing.Inventory.Achievements;
 using Turbo.Primitives.Messages.Outgoing.Inventory.Avatareffect;
@@ -32,7 +34,9 @@ public class SSOTicketMessageHandler(
     INavigatorService navigatorService,
     ISanctionService sanctionService,
     IHotelAvailability hotelAvailability,
-    IHotelTextProvider textProvider
+    IHotelTextProvider textProvider,
+    IPlayerClothingService clothing,
+    ICallForHelpService callForHelp
 ) : IMessageHandler<SSOTicketMessage>
 {
     private readonly IAuthenticationService _authService = authService;
@@ -49,6 +53,10 @@ public class SSOTicketMessageHandler(
         CancellationToken ct
     )
     {
+        // A connection logs in once; a second ticket on it is not a way to become someone else.
+        if (ctx.PlayerId > 0)
+            return;
+
         var ticket = message.SSO;
         var playerId = await _authService
             .GetPlayerIdFromTicketAsync(ticket, ct)
@@ -56,7 +64,7 @@ public class SSOTicketMessageHandler(
 
         if (playerId <= 0)
         {
-            await ctx.CloseSessionAsync().ConfigureAwait(false);
+            await ctx.CloseSessionAsync("invalid SSO ticket").ConfigureAwait(false);
 
             return;
         }
@@ -67,12 +75,14 @@ public class SSOTicketMessageHandler(
             await ctx.SendComposerAsync(
                     new UserBannedMessageComposer
                     {
-                        Message = SanctionMessages.BanMessage(ban, _textProvider),
+                        Message = await SanctionMessages
+                            .BanMessageAsync(ban, _textProvider, ct)
+                            .ConfigureAwait(false),
                     },
                     ct
                 )
                 .ConfigureAwait(false);
-            await ctx.CloseSessionAsync().ConfigureAwait(false);
+            await ctx.CloseSessionAsync("banned").ConfigureAwait(false);
 
             return;
         }
@@ -83,12 +93,14 @@ public class SSOTicketMessageHandler(
             await ctx.SendComposerAsync(
                     new HabboBroadcastMessageComposer
                     {
-                        Message = AvailabilityMessages.MaintenanceStarted(_textProvider),
+                        Message = await AvailabilityMessages
+                            .MaintenanceStartedAsync(_textProvider, ct)
+                            .ConfigureAwait(false),
                     },
                     ct
                 )
                 .ConfigureAwait(false);
-            await ctx.CloseSessionAsync().ConfigureAwait(false);
+            await ctx.CloseSessionAsync("hotel closed for maintenance").ConfigureAwait(false);
 
             return;
         }
@@ -97,7 +109,7 @@ public class SSOTicketMessageHandler(
             .AddSessionToPlayerAsync(ctx.SessionKey, playerId)
             .ConfigureAwait(false);
 
-        // Three reads from three different grains, none depending on another, so they are asked
+        // Five reads from five different grains, none depending on another, so they are asked
         // side by side and awaited where their answers are sent. The composers still go out in
         // the order below.
         var settingsTask = _grainFactory.GetPlayerSettingsGrain(playerId).GetSettingsAsync(ct);
@@ -107,8 +119,25 @@ public class SSOTicketMessageHandler(
         var clubGiftsTask = _grainFactory
             .GetCatalogPurchaseGrain(playerId)
             .GetClubGiftInfoAsync(ct);
+        // The welcome message staff set in the admin panel; answered from memory.
+        var welcomeMessageTask = _grainFactory.GetWelcomeMessageGrain().GetMessageAsync(ct);
+        // The effects the player owns, with what is left of any that is running.
+        var effectsTask = _grainFactory.GetPlayerEffectGrain(playerId).GetEffectsAsync(ct);
+        // The clothing they own, which the avatar editor offers them besides what everyone has.
+        var ownedClothingTask = clothing.GetOwnedAsync(playerId, ct);
+        // The clothing furni they have bound, which the client puts on without asking again.
+        var boundClothingTask = clothing.GetBoundFurnitureNamesAsync(playerId, ct);
 
-        await Task.WhenAll(settingsTask, favouriteRoomIdsTask, clubGiftsTask).ConfigureAwait(false);
+        await Task.WhenAll(
+                settingsTask,
+                favouriteRoomIdsTask,
+                clubGiftsTask,
+                welcomeMessageTask,
+                effectsTask,
+                ownedClothingTask,
+                boundClothingTask
+            )
+            .ConfigureAwait(false);
 
         await ctx.SendComposerAsync(
                 new AuthenticationOKMessage
@@ -125,6 +154,18 @@ public class SSOTicketMessageHandler(
             .GetPlayerPermissionGrain(playerId)
             .NotifyActiveRestrictionsAsync(ct)
             .ConfigureAwait(false);
+        await ctx.SendComposerAsync(
+                new AvatarEffectsMessageComposer
+                {
+                    Effects = await effectsTask.ConfigureAwait(false),
+                },
+                ct
+            )
+            .ConfigureAwait(false);
+
+        // What they wore last may not be theirs to wear now - club clothing after the club ran
+        // out - so it is fitted again before anyone sees it.
+        await _grainFactory.GetPlayerGrain(playerId).RefitFigureAsync(ct).ConfigureAwait(false);
         await ctx.SendComposerAsync(new AvatarEffectsMessageComposer { Effects = [] }, ct)
             .ConfigureAwait(false);
         var settings = await settingsTask.ConfigureAwait(false);
@@ -172,8 +213,8 @@ public class SSOTicketMessageHandler(
         await ctx.SendComposerAsync(
                 new FigureSetIdsEventMessageComposer
                 {
-                    FigureSetIds = [],
-                    BoundFurnitureNames = [],
+                    FigureSetIds = [.. (await ownedClothingTask.ConfigureAwait(false)).Order()],
+                    BoundFurnitureNames = await boundClothingTask.ConfigureAwait(false),
                 },
                 ct
             )
@@ -206,7 +247,21 @@ public class SSOTicketMessageHandler(
             .ConfigureAwait(false);
         await ctx.SendComposerAsync(new InfoFeedEnableMessageComposer { Enabled = true }, ct)
             .ConfigureAwait(false);
+        // What a call for help can be about: the help window builds its report flow from these.
+        await ctx.SendComposerAsync(
+                new CfhTopicsInitMessageComposer
+                {
+                    Categories = await callForHelp.GetTopicsAsync(ct).ConfigureAwait(false),
+                },
+                ct
+            )
+            .ConfigureAwait(false);
 
+        // The reward tracks come unasked: the progression menu counts their claimable prizes.
+        await _grainFactory
+            .GetPlayerRewardTrackGrain(playerId)
+            .SendTracksAsync(ct)
+            .ConfigureAwait(false);
         await _grainFactory
             .GetPlayerWalletGrain(playerId)
             .DeliverPendingRewardsAsync(ct)
@@ -253,5 +308,15 @@ public class SSOTicketMessageHandler(
                 ct
             )
             .ConfigureAwait(false);
+
+        // Last, so it opens over the hotel view. None is shown while the message is empty.
+        var welcomeMessage = await welcomeMessageTask.ConfigureAwait(false);
+
+        if (!string.IsNullOrWhiteSpace(welcomeMessage))
+            await ctx.SendComposerAsync(
+                    new MOTDNotificationEventMessageComposer { Messages = [welcomeMessage] },
+                    ct
+                )
+                .ConfigureAwait(false);
     }
 }

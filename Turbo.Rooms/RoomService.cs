@@ -274,20 +274,26 @@ internal sealed partial class RoomService(
         }
     }
 
-    public async Task KickPlayerAsync(ActionContext ctx, PlayerId targetId, CancellationToken ct)
+    public async Task<bool> KickPlayerAsync(
+        ActionContext ctx,
+        PlayerId targetId,
+        CancellationToken ct
+    )
     {
         if (ctx.PlayerId <= 0 || ctx.RoomId <= 0 || targetId <= 0)
-            return;
+            return false;
 
         var room = _grainFactory.GetRoomGrain(ctx.RoomId);
 
         if (!await room.KickPlayerAsync(ctx, targetId, ct).ConfigureAwait(false))
-            return;
+            return false;
 
         await EvictPlayerAsync(ctx.RoomId, targetId, kicked: true, ct).ConfigureAwait(false);
+
+        return true;
     }
 
-    public async Task BanPlayerAsync(
+    public async Task<bool> BanPlayerAsync(
         ActionContext ctx,
         PlayerId targetId,
         RoomBanDurationType duration,
@@ -295,14 +301,16 @@ internal sealed partial class RoomService(
     )
     {
         if (ctx.PlayerId <= 0 || ctx.RoomId <= 0 || targetId <= 0)
-            return;
+            return false;
 
         var room = _grainFactory.GetRoomGrain(ctx.RoomId);
 
         if (!await room.BanPlayerAsync(ctx, targetId, duration, ct).ConfigureAwait(false))
-            return;
+            return false;
 
         await EvictPlayerAsync(ctx.RoomId, targetId, kicked: true, ct).ConfigureAwait(false);
+
+        return true;
     }
 
     public async Task DeleteRoomAsync(ActionContext ctx, CancellationToken ct)
@@ -558,7 +566,7 @@ internal sealed partial class RoomService(
                 FixedWallsHeight =
                     snapshot.WallHeight >= 0 ? snapshot.WallHeight : _roomConfig.DefaultWallHeight,
                 ModelData = mapSnapshot.ModelData,
-                AreaHideData = [],
+                AreaHideData = [.. view.AreaHides],
                 CameraInitX = mapSnapshot.DoorX,
                 CameraInitY = mapSnapshot.DoorY,
                 CameraInitZ = doorAltitude,
@@ -602,6 +610,18 @@ internal sealed partial class RoomService(
         composers.Add(
             new ItemsMessageComposer { OwnerNames = view.OwnerNames, WallItems = view.WallItems }
         );
+
+        // Only when on: the client starts every room with the marks of invisible furni shown.
+        if (view.InvisibleFurni)
+            composers.Add(
+                new ConfigurationItemStatesMessageComposer
+                {
+                    IsHanditemControlBlocked = false,
+                    ChooserDisabled = false,
+                    FreeFurniMovementsEnabled = false,
+                    InvisibleFurni = true,
+                }
+            );
         composers.Add(new UsersMessageComposer { Avatars = view.Avatars });
         composers.Add(new UserUpdateMessageComposer { Avatars = view.Avatars });
 
@@ -661,6 +681,21 @@ internal sealed partial class RoomService(
                 {
                     RoomId = roomId,
                     IsOwner = controllerLevel >= RoomControllerType.Owner,
+                },
+                ct
+            )
+            .ConfigureAwait(false);
+
+        // After the entry info: the client takes this only for the room it has entered, which
+        // that message is what tells it, and shows Room info's raid protection button on it.
+        await _grainFactory
+            .SendComposerToPlayerAsync(
+                ctx.PlayerId,
+                new RaidProtectionCapabilityMessageComposer
+                {
+                    RoomId = roomId,
+                    CanManage = await room.CanManageRaidProtectionAsync(roomCtx, ct)
+                        .ConfigureAwait(false),
                 },
                 ct
             )

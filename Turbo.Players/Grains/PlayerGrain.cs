@@ -12,7 +12,9 @@ using Turbo.Logging;
 using Turbo.Players.Configuration;
 using Turbo.Primitives;
 using Turbo.Primitives.Achievements;
+using Turbo.Primitives.Figures;
 using Turbo.Primitives.Messages.Outgoing.Avatar;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Orleans;
 using Turbo.Primitives.Players;
 using Turbo.Primitives.Players.Grains;
@@ -31,8 +33,10 @@ internal sealed partial class PlayerGrain : Grain, IPlayerGrain
     private readonly IDbContextFactory<TurboDbContext> _dbCtxFactory;
     private readonly PlayerConfig _playerConfig;
     private readonly IGrainFactory _grainFactory;
+    private readonly IWordFilter _wordFilter;
     private readonly ILogger<IPlayerGrain> _logger;
     private readonly IAchievementFactRecorder _achievementFacts;
+    private readonly IPlayerFigurePolicy _figurePolicy;
 
     private readonly PlayerLiveState _state;
 
@@ -42,13 +46,17 @@ internal sealed partial class PlayerGrain : Grain, IPlayerGrain
         IDbContextFactory<TurboDbContext> dbCtxFactory,
         IOptions<PlayerConfig> playerConfig,
         IGrainFactory grainFactory,
+        IWordFilter wordFilter,
         IAchievementFactRecorder achievementFacts,
+        IPlayerFigurePolicy figurePolicy,
         ILogger<IPlayerGrain> logger
     )
     {
+        _figurePolicy = figurePolicy;
         _dbCtxFactory = dbCtxFactory;
         _playerConfig = playerConfig.Value;
         _grainFactory = grainFactory;
+        _wordFilter = wordFilter;
         _logger = logger;
         _achievementFacts = achievementFacts;
 
@@ -100,8 +108,32 @@ internal sealed partial class PlayerGrain : Grain, IPlayerGrain
 
     public async Task SetFigureAsync(string figure, AvatarGenderType gender, CancellationToken ct)
     {
+        // Whatever asked - the avatar editor, a mannequin, a booth - the player wears only what
+        // they may: anything else comes off, or is swapped for what they may wear instead.
+        var requested = figure;
+
+        figure = await _figurePolicy.FitAsync(PlayerId, requested, gender, ct);
+
+        if (figure != requested)
+            _logger.LogInformation(
+                "Player {PlayerId} may not wear all of {Requested}; wearing {Figure}",
+                PlayerId,
+                requested,
+                figure
+            );
+
         if (_state.Figure == figure && _state.Gender == gender)
+        {
+            // The client shows the look it asked for until told otherwise.
+            if (figure != requested)
+                await _grainFactory.SendComposerToPlayerAsync(
+                    PlayerId,
+                    new FigureUpdateEventMessageComposer { Figure = figure, Gender = gender },
+                    ct
+                );
+
             return;
+        }
         var previousFigure = _state.Figure;
         var previousGender = _state.Gender;
         _state.Figure = figure;
@@ -135,8 +167,13 @@ internal sealed partial class PlayerGrain : Grain, IPlayerGrain
             .OnPlayerUpdatedAsync(await GetSummaryAsync(ct), ct);
     }
 
+    public Task RefitFigureAsync(CancellationToken ct) =>
+        SetFigureAsync(_state.Figure, _state.Gender, ct);
+
     public async Task SetMottoAsync(string text, CancellationToken ct)
     {
+        text = _wordFilter.Filter(text);
+
         if (_state.Motto == text)
             return;
         var previous = _state.Motto;
@@ -204,10 +241,7 @@ internal sealed partial class PlayerGrain : Grain, IPlayerGrain
                 Source = AchievementSources.PETS,
                 OperationId = Guid.NewGuid().ToString("N"),
                 OccurredAtUtc = now,
-                Amount = await db.Pets.CountAsync(
-                    x => x.PlayerEntityId == PlayerId.Value && x.DeletedAt == null,
-                    ct
-                ),
+                Amount = await db.Pets.CountAsync(x => x.PlayerEntityId == PlayerId.Value, ct),
             }
         );
         await db.SaveChangesAsync(ct);

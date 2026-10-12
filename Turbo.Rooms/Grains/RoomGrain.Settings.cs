@@ -10,6 +10,7 @@ using Turbo.Primitives.Action;
 using Turbo.Primitives.Messages.Outgoing.Navigator;
 using Turbo.Primitives.Messages.Outgoing.Room.Chat;
 using Turbo.Primitives.Messages.Outgoing.Room.Engine;
+using Turbo.Primitives.Moderation;
 using Turbo.Primitives.Navigator;
 using Turbo.Primitives.Orleans;
 using Turbo.Primitives.Players;
@@ -17,7 +18,6 @@ using Turbo.Primitives.Rooms;
 using Turbo.Primitives.Rooms.Enums;
 using Turbo.Primitives.Rooms.Snapshots;
 using Turbo.Primitives.Rooms.Snapshots.Settings;
-using Turbo.Primitives.Texts;
 
 namespace Turbo.Rooms.Grains;
 
@@ -52,12 +52,12 @@ public sealed partial class RoomGrain
             return RoomSettingsSaveResultSnapshot.Failed(RoomSettingsSaveErrorType.Invalid);
 
         var current = _state.RoomSnapshot;
-        var name = ClientText.Truncate(settings.Name, _roomConfig.RoomNameMaxLength);
+        var name = _wordFilter.FilterAndTruncate(settings.Name, _roomConfig.RoomNameMaxLength);
 
         if (name.Length == 0)
             return RoomSettingsSaveResultSnapshot.Failed(RoomSettingsSaveErrorType.NameRequired);
 
-        var description = ClientText.Truncate(
+        var description = _wordFilter.FilterAndTruncate(
             settings.Description,
             _roomConfig.RoomDescriptionMaxLength
         );
@@ -105,10 +105,8 @@ public sealed partial class RoomGrain
                 overlongTag.Trim().ToLowerInvariant()
             );
 
-        var tags = RoomTags.Normalize(
-            settings.Tags,
-            _roomConfig.RoomTagsMax,
-            _roomConfig.RoomTagMaxLength
+        var tags = _wordFilter.FilterTags(
+            RoomTags.Normalize(settings.Tags, _roomConfig.RoomTagsMax, _roomConfig.RoomTagMaxLength)
         );
         var maximumVisitors = Math.Clamp(
             settings.MaximumVisitors,
@@ -245,6 +243,7 @@ public sealed partial class RoomGrain
         await dbCtx.RoomRights.Where(x => x.RoomEntityId == roomId).ExecuteDeleteAsync(ct);
         await dbCtx.RoomBans.Where(x => x.RoomEntityId == roomId).ExecuteDeleteAsync(ct);
         await dbCtx.RoomMutes.Where(x => x.RoomEntityId == roomId).ExecuteDeleteAsync(ct);
+        await dbCtx.RoomRaidProtections.Where(x => x.RoomEntityId == roomId).ExecuteDeleteAsync(ct);
         await dbCtx.RoomRatings.Where(x => x.RoomEntityId == roomId).ExecuteDeleteAsync(ct);
         await dbCtx.RoomEvents.Where(x => x.RoomEntityId == roomId).ExecuteDeleteAsync(ct);
         await dbCtx.RoomEntryLogs.Where(x => x.RoomEntityId == roomId).ExecuteDeleteAsync(ct);

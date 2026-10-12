@@ -93,13 +93,18 @@ public sealed class SqliteDb : IDbContextFactory<TurboDbContext>, IDisposable
 
             foreach (var entityType in mb.Model.GetEntityTypes())
             {
+                // MySQL's collations mean nothing to SQLite, which compares case-sensitively anyway.
+                foreach (var property in entityType.GetProperties())
+                    property.SetCollation(null);
+
                 if (!typeof(TurboEntity).IsAssignableFrom(entityType.ClrType))
                     continue;
 
                 entityType.FindProperty(nameof(TurboEntity.CreatedAt))!.ValueGenerated =
                     ValueGenerated.Never;
-                entityType.FindProperty(nameof(TurboEntity.UpdatedAt))!.ValueGenerated =
-                    ValueGenerated.Never;
+
+                if (entityType.FindProperty("UpdatedAt") is { } updatedAt)
+                    updatedAt.ValueGenerated = ValueGenerated.Never;
             }
         }
     }
@@ -144,8 +149,12 @@ public sealed class SqliteDb : IDbContextFactory<TurboDbContext>, IDisposable
                 if (entry.Entity.CreatedAt == default)
                     entry.Entity.CreatedAt = DateTime.UtcNow;
 
-                if (entry.Entity.UpdatedAt == default)
-                    entry.Entity.UpdatedAt = DateTime.UtcNow;
+                if (
+                    entry.Metadata.FindProperty("UpdatedAt") is not null
+                    && entry.Property("UpdatedAt").CurrentValue is DateTime updatedAt
+                    && updatedAt == default
+                )
+                    entry.Property("UpdatedAt").CurrentValue = DateTime.UtcNow;
             }
         }
     }

@@ -38,6 +38,11 @@ public sealed class FakeExecutor : IOperatorExecutor
 
     public string Name { get; }
 
+    /// <summary>Where the command came from; unset, what the contract says by default.</summary>
+    public string? SourceOverride { get; set; }
+
+    public string Source => SourceOverride ?? (PlayerId is null ? "console" : "player");
+
     public RoomId? RoomId { get; }
 
     public IReadOnlyList<PlayerId> RoomPlayerIds { get; }
@@ -104,15 +109,7 @@ public sealed class OperatorFixture
     public OperatorFixture(CommandConfig? config = null)
     {
         Config = config ?? new CommandConfig();
-        Fakes.Handlers["TryGetText"] = call =>
-        {
-            if (call.Args[0] is not string key || !HotelTexts.TryGetValue(key, out var text))
-                return false;
-
-            call.Args[1] = text;
-
-            return true;
-        };
+        HotelTextFakes.Use(Fakes, key => HotelTexts.GetValueOrDefault(key));
         Fakes.Handlers["GetPlayerIdAsync"] = call =>
             Task.FromResult<PlayerId?>(
                 _idsByName.TryGetValue((string)call.Args[0]!, out var id) ? id : null

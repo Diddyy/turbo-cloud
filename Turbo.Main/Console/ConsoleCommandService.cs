@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Orleans;
+using Turbo.Achievements;
 using Turbo.Commands;
 using Turbo.Plugins;
 using Turbo.Primitives.Achievements;
@@ -53,6 +54,11 @@ public class ConsoleCommandService(IServiceProvider services)
         {
             var input = await Task.Run(System.Console.ReadLine, ct).ConfigureAwait(false);
 
+            // End of input: running as a daemon with no terminal attached. Reading again would
+            // return null at once and spin.
+            if (input is null)
+                return;
+
             if (string.IsNullOrWhiteSpace(input))
                 continue;
 
@@ -72,7 +78,9 @@ public class ConsoleCommandService(IServiceProvider services)
                 try
                 {
                     await new AchievementConsoleCommand(
-                        _services.GetRequiredService<IAchievementCatalog>()
+                        _services.GetRequiredService<IAchievementCatalog>(),
+                        _services.GetRequiredService<IAchievementPackRegistry>(),
+                        _services.GetRequiredService<AchievementSync>()
                     )
                         .RunAsync(args, ct)
                         .ConfigureAwait(false);
@@ -88,16 +96,20 @@ public class ConsoleCommandService(IServiceProvider services)
                 break;
             case "help":
                 System.Console.WriteLine(
-                    "Available commands: help, quit, reload-plugins, reload-plugin <key>, perm (perm help for usage), and any operator chat command by name, such as ban, alert or status"
+                    "Available commands: help, quit, reload-plugins, reload-plugin <key>, perm (perm help for usage), achievement (run it with no arguments for usage), and any operator chat command by name, such as ban, alert or status"
                 );
                 var registry = _services.GetRequiredService<ICommandRegistryProvider>().Current;
-                var texts = _services.GetRequiredService<IHotelTextProvider>();
-                var commands =
+                var commands = (
                     args.Length == 0 ? registry.Commands.Where(x => x.IsOperator)
                     : registry.TryFind(args[0].TrimStart(':'), out var selected)
                     && selected.IsOperator
                         ? [selected]
-                    : Array.Empty<CommandDescriptor>();
+                    : Array.Empty<CommandDescriptor>()
+                ).ToList();
+                var texts = await _services
+                    .GetRequiredService<IHotelTextProvider>()
+                    .GetTextsAsync(CommandHelp.DescriptionKeys(commands), ct)
+                    .ConfigureAwait(false);
                 foreach (var command in commands)
                 foreach (
                     var line in CommandHelp.Describe(
