@@ -62,4 +62,8 @@ public sealed record RoomEntryViewSnapshot
     /// <summary>A <c>:chooser</c> disabler is switched on.</summary>
     [Id(13)]
     public required bool ChooserDisabled { get; init; }
+
+    /// <summary>A wired text in the room writes <c>$(trigger_text)</c>: the room can use what is said.</summary>
+    [Id(14)]
+    public required bool UsesTriggerText { get; init; }
 }

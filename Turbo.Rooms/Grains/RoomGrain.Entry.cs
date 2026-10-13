@@ -9,6 +9,7 @@ using Turbo.Primitives.Rooms.Enums;
 using Turbo.Primitives.Rooms.Snapshots;
 using Turbo.Primitives.Rooms.Snapshots.Furniture;
 using Turbo.Rooms.Object.Logic.Furniture.Floor;
+using Turbo.Rooms.Object.Logic.Furniture.Floor.Wired;
 
 namespace Turbo.Rooms.Grains;
 
@@ -119,6 +120,9 @@ public sealed partial class RoomGrain
                     FurnitureConfigurationControlLogic.IsOnInRoom<FurnitureChooserDisableLogic>(
                         FurniModule
                     ),
+                UsesTriggerText = FurniModule.Items.Any(x =>
+                    x.Logic is FurnitureWiredLogic wired && wired.UsesTriggerText()
+                ),
             }
         );
 

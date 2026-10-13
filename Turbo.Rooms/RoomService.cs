@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -41,6 +42,9 @@ internal sealed partial class RoomService(
     private readonly ILogger<IRoomService> _logger = logger;
     private readonly RoomConfig _roomConfig = roomConfig.Value;
     private readonly IGrainFactory _grainFactory = grainFactory;
+
+    /// <summary>Habbo's notification type for a room's wired notices (NotificationDialog).</summary>
+    private const string WIRED_ERROR_NOTIFICATION = "wired.error";
 
     public async Task<FollowFriendErrorCodeType?> FollowFriendAsync(
         PlayerId playerId,
@@ -689,6 +693,23 @@ internal sealed partial class RoomService(
                 ct
             )
             .ConfigureAwait(false);
+
+        // Habbo tells everyone who enters a room whose wired writes $(trigger_text) that it can
+        // use what they say, right after the entry info (hhus, 2026-10-13).
+        if (view.UsesTriggerText)
+            await _grainFactory
+                .SendComposerToPlayerAsync(
+                    ctx.PlayerId,
+                    new NotificationDialogMessageComposer
+                    {
+                        NotificationType = WIRED_ERROR_NOTIFICATION,
+                        Parameters = ImmutableDictionary<string, string>
+                            .Empty.Add("image", "${image.library.url}album1584/WIRD1.png")
+                            .Add("message", "${room.error.wired.trigger_text_capture}"),
+                    },
+                    ct
+                )
+                .ConfigureAwait(false);
 
         // Habbo rates the room at the end of the entry, right before the raid protection.
         await _grainFactory

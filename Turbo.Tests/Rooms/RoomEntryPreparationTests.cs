@@ -1,9 +1,12 @@
+using FluentAssertions;
 using Turbo.Primitives.Action;
+using Turbo.Primitives.Messages.Incoming.Userdefinedroomevents;
 using Turbo.Primitives.Packets;
 using Turbo.Primitives.Players;
 using Turbo.Primitives.Rooms;
 using Turbo.Primitives.Rooms.Enums;
 using Turbo.Primitives.Rooms.Snapshots;
+using Turbo.Rooms.Object.Logic.Furniture.Floor.Wired.Actions;
 using Turbo.Tests.Support;
 using Xunit;
 
@@ -339,6 +342,58 @@ public class RoomEntryPreparationTests
             headers.Count(h => h == PacketHarness.Outgoing("RoomPropertyMessageComposer"))
         );
         Assert.DoesNotContain(PacketHarness.Outgoing("RoomChatSettingsMessageComposer"), headers);
+    }
+
+    [Theory]
+    [InlineData("$(trigger_text) said it", true)]
+    [InlineData("parity test", false)]
+    public async Task ARoomWhoseWiredUsesTheTriggerText_TellsWhoEntersRightAfterTheEntryInfo(
+        string text,
+        bool notice
+    )
+    {
+        // hhus, 2026-10-13, the owner's own room with a Show Message "$(trigger_text)...": every
+        // entry has NotificationDialog wired.error (image album1584/WIRD1.png, message
+        // room.error.wired.trigger_text_capture: "WIRED in this room can use the full text of
+        // messages that trigger it") right after RoomEntryInfo. With that text saved as
+        // "parity test" the next entry had none; back to "$(trigger_text)..." it was there again.
+        var room = new WiredRoom(8, 8);
+        room.AddBox<WiredActionShowMessage>(1, 0, 0, "wf_act_show_message");
+        (
+            await room.SaveAsync<UpdateActionMessage>(
+                1,
+                intParams: [1, 34, -1],
+                stringParam: text,
+                definitionSpecifics: [0]
+            )
+        )
+            .Should()
+            .BeTrue();
+        var view = await room.Harness.Room.GetEntryViewAsync((PlayerId)1, CancellationToken.None);
+        var harness = CreateHarness(RoomEntryAccessType.Allowed);
+        harness.Fakes.Handlers["GetEntryViewAsync"] = _ => Task.FromResult(view);
+
+        var packets = await OpenRoomAsync(harness);
+        var headers = packets.Select(packet => (int)packet.Header).ToList();
+        var dialog = headers.IndexOf(PacketHarness.Outgoing("NotificationDialogMessageComposer"));
+
+        if (!notice)
+        {
+            Assert.Equal(-1, dialog);
+            return;
+        }
+
+        Assert.Equal(
+            headers.IndexOf(PacketHarness.Outgoing("RoomEntryInfoMessageComposer")) + 1,
+            dialog
+        );
+        var packet = packets[dialog];
+        Assert.Equal("wired.error", packet.PopString());
+        var parameters = Enumerable
+            .Range(0, packet.PopInt())
+            .ToDictionary(_ => packet.PopString(), _ => packet.PopString());
+        Assert.Equal("${image.library.url}album1584/WIRD1.png", parameters["image"]);
+        Assert.Equal("${room.error.wired.trigger_text_capture}", parameters["message"]);
     }
 
     private static async Task<PacketHarness> ApprovedHarnessAsync(
