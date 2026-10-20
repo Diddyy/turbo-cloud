@@ -63,6 +63,10 @@ public sealed record WiredWebApiRequest
     [Id(15)]
     public string? PlayerName { get; init; }
 
+    /// <summary>The unique id the public API shows for <see cref="PlayerId"/> (<c>hhus-&lt;32 hex&gt;</c>).</summary>
+    [Id(17)]
+    public string? PlayerUniqueId { get; init; }
+
     /// <summary>Batched writes the room may make a minute (each batch write and profile change costs one); 0 for no limit.</summary>
     [Id(16)]
     public int BatchWriteBudget { get; init; }

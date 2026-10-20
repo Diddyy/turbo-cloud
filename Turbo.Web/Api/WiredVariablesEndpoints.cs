@@ -237,6 +237,9 @@ internal sealed class WiredVariablesEndpoints(
             UniqueId = query["unique_id"],
             PlayerId = playerId,
             PlayerName = playerName,
+            PlayerUniqueId = playerId is { } id
+                ? config.Value.PublicApi.UniqueIds().Format(id)
+                : null,
             BatchWriteBudget = Api.BatchWriteBudgetPerMinute,
         };
         var response = await grainFactory
@@ -313,8 +316,8 @@ internal sealed class WiredVariablesEndpoints(
     }
 
     /// <summary>
-    /// The player a user profile call names, by name, unique id (this hotel has none, so its
-    /// player id, inference) or the player id in the path, so the room can answer for a player
+    /// The player a user profile call names, by name, unique id (<see cref="PlayerUniqueIds"/>)
+    /// or the player id in the path, so the room can answer for a player
     /// who is not there with their name. Nothing for other calls.
     /// </summary>
     private async Task<(int? Id, string? Name)> FindPlayerAsync(
@@ -334,7 +337,8 @@ internal sealed class WiredVariablesEndpoints(
             case WiredWebApiOperation.FindUserProfile when !string.IsNullOrEmpty(name):
                 byName = PlayerNames.Key(name);
                 break;
-            case WiredWebApiOperation.FindUserProfile when int.TryParse(uniqueId, out var id):
+            case WiredWebApiOperation.FindUserProfile
+                when config.Value.PublicApi.UniqueIds().TryParse(uniqueId, out var id):
                 byId = id;
                 break;
             case WiredWebApiOperation.GetUserProfile

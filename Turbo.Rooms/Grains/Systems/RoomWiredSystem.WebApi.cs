@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -923,7 +922,7 @@ public sealed partial class RoomWiredSystem
             return WiredWebApiJson.Error(404, WiredWebApiErrors.ENTITY_NOT_FOUND);
 
         return WiredWebApiJson.Ok(
-            ProfileOf(entity with { Name = entity.Name ?? request.PlayerName })
+            ProfileOf(entity with { Name = entity.Name ?? request.PlayerName }, request)
         );
     }
 
@@ -1079,10 +1078,10 @@ public sealed partial class RoomWiredSystem
             }
         }
 
-        return WiredWebApiJson.Ok(ProfileOf(entity));
+        return WiredWebApiJson.Ok(ProfileOf(entity, request));
     }
 
-    private JsonObject ProfileOf(WiredWebApiEntity entity)
+    private JsonObject ProfileOf(WiredWebApiEntity entity, WiredWebApiRequest request)
     {
         var variables = new JsonObject();
 
@@ -1113,10 +1112,14 @@ public sealed partial class RoomWiredSystem
         if (entity.Name is not null)
             target["name"] = entity.Name;
 
-        // WiredUserProfileTarget.unique_id: this hotel has no unique ids, so a player's is their
-        // player id, the one users?unique_id= finds them by (inference).
-        if (entity.Kind == WiredWebApiEntity.USERS)
-            target["unique_id"] = entity.ApiId.ToString(CultureInfo.InvariantCulture);
+        // WiredUserProfileTarget.unique_id: the id the public API shows for the player, the one
+        // users?unique_id= finds them by.
+        if (
+            entity.Kind == WiredWebApiEntity.USERS
+            && request.PlayerId == entity.ApiId
+            && request.PlayerUniqueId is { } uniqueId
+        )
+            target["unique_id"] = uniqueId;
 
         profile[WiredWebApiEntity.ProfileFieldOf(entity.Kind)] = target;
 

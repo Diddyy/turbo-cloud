@@ -54,7 +54,8 @@ internal sealed class PublicRoomsEndpoints(
     /// <summary>The player's rooms, oldest first; 404 for no such player or a hidden profile, not an empty list.</summary>
     private async Task<IResult> PlayerRoomsAsync(string id, CancellationToken ct)
     {
-        if (!int.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var playerId))
+        // A player is named by the unique id the API shows for them (ownerUniqueId).
+        if (!Api.UniqueIds().TryParse(id, out var playerId))
             return Results.Json(
                 new
                 {
@@ -135,6 +136,8 @@ internal sealed class PublicRoomsEndpoints(
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
+        var uniqueIds = Api.UniqueIds();
+
         return
         [
             .. rows.Select(row => new PublicApiRoom(
@@ -150,7 +153,7 @@ internal sealed class PublicRoomsEndpoints(
                 row.PlayersMax,
                 !row.HideOwner,
                 row.HideOwner ? null : row.OwnerName,
-                row.HideOwner ? null : row.OwnerId.ToString(CultureInfo.InvariantCulture),
+                row.HideOwner ? null : uniqueIds.Format(row.OwnerId),
                 CategoryOf(row.CategoryKey, row.CategoryName),
                 UrlOf(Api.RoomThumbnailUrl, row.Id),
                 UrlOf(Api.RoomImageUrl, row.Id),

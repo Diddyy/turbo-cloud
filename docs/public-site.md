@@ -151,6 +151,8 @@ All settings live under `Turbo:Web`.
 | `ShowVersion` | `true` | | Whether `/api/version` answers `{"version":"1.0.0","commit":"<sha>"}`: the commit the server was built from, so a deploy can be checked from outside. Off, there is no such endpoint. |
 | `Discord:ClientId` | empty | `TURBO_DISCORD_CLIENT_ID` | The Discord application's client id. |
 | `Discord:ClientSecret` | empty | `TURBO_DISCORD_CLIENT_SECRET` | Its secret. Without both, the site says Discord sign-in isn't available. |
+| `PublicApi:UniqueIdPrefix` | `hhus` | | The hotel part of a player's unique id in the public API (`<prefix>-<32 hex>`, Habbo's form). |
+| `PublicApi:UniqueIdKey` | a fixed key | | 32 hex digits the players' unique ids are made with. **Set your own before going live**: with the default, anyone can turn a unique id back into a player id. Changing it later changes every player's unique id. |
 
 ## Things to know
 

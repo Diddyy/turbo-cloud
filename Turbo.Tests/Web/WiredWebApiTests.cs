@@ -910,7 +910,18 @@ public sealed class WiredWebApiTests : IAsyncDisposable
         );
         Leave(PLAYER_INDEX);
 
-        foreach (var query in new[] { "name=BOB", $"unique_id={PLAYER_ID}" })
+        // Habbo's form: hhus-<32 hex>, the same on every answer.
+        var uniqueId = (
+            await JsonAsync(
+                HttpMethod.Get,
+                "/api/public/rooms/1/variables_profile/user/users?name=BOB",
+                read: read
+            )
+        )!["user"]!["unique_id"]!.GetValue<string>();
+
+        uniqueId.Should().MatchRegex("^hhus-[0-9a-f]{32}$");
+
+        foreach (var query in new[] { "name=BOB", $"unique_id={uniqueId}" })
         {
             var profile = await JsonAsync(
                 HttpMethod.Get,
@@ -920,9 +931,23 @@ public sealed class WiredWebApiTests : IAsyncDisposable
 
             profile!["user"]!["id"]!.GetValue<int>().Should().Be(PLAYER_ID);
             profile["user"]!["name"]!.GetValue<string>().Should().Be("bob");
-            profile["user"]!["unique_id"]!.GetValue<string>().Should().Be($"{PLAYER_ID}");
+            profile["user"]!["unique_id"]!.GetValue<string>().Should().Be(uniqueId);
             profile["variables"]!["coins"]!["value"]!.GetValue<string>().Should().Be("5");
         }
+
+        // A bare player id, or a made-up id in the right form, names nobody.
+        foreach (
+            var query in new[] { $"unique_id={PLAYER_ID}", $"unique_id=hhus-{new string('0', 32)}" }
+        )
+            (
+                await SendAsync(
+                    HttpMethod.Get,
+                    $"/api/public/rooms/1/variables_profile/user/users?{query}",
+                    read: read
+                )
+            )
+                .Should()
+                .Be((404, "wired.variables.entity_not_found"));
 
         (
             await JsonAsync(
@@ -1001,7 +1026,9 @@ public sealed class WiredWebApiTests : IAsyncDisposable
         room["doorMode"]!.GetValue<string>().Should().Be("open");
         room["maximumVisitors"]!.GetValue<int>().Should().Be(25);
         room["ownerName"]!.GetValue<string>().Should().Be("alice");
-        room["ownerUniqueId"]!.GetValue<string>().Should().Be("1");
+        var ownerUniqueId = room["ownerUniqueId"]!.GetValue<string>();
+
+        ownerUniqueId.Should().MatchRegex("^hhus-[0-9a-f]{32}$");
         room["uniqueId"]!.GetValue<string>().Should().Be("1");
 
         // Invisible rooms are not public; a hidden owner is not named.
@@ -1017,22 +1044,39 @@ public sealed class WiredWebApiTests : IAsyncDisposable
         shy["tags"]!.AsArray().Select(x => (string)x!).Should().Equal("games", "chill");
 
         var owned = (
-            await RawAsync(HttpMethod.Get, "/api/public/users/1/rooms", null, null, null)
+            await RawAsync(
+                HttpMethod.Get,
+                $"/api/public/users/{ownerUniqueId}/rooms",
+                null,
+                null,
+                null
+            )
         ).Item2!.AsArray();
 
         owned.Select(x => (int)x!["id"]!).Should().Equal(1, 3);
-        (await SendAsync(HttpMethod.Get, "/api/public/users/999/rooms"))
+        // The id of a player the hotel does not have.
+        (
+            await SendAsync(
+                HttpMethod.Get,
+                $"/api/public/users/{_config.PublicApi.UniqueIds().Format(999)}/rooms"
+            )
+        )
             .Should()
             .Be((404, "not-found"));
         (await RawAsync(HttpMethod.Get, "/api/public/users/hhus-x/rooms", null, null, null))
             .Item2!.ToJsonString()
             .Should()
             .Be("""{"errors":[{"param":"id","msg":"user.invalid_id","value":"hhus-x"}]}""");
+        // A bare player id is not a unique id.
+        (await RawAsync(HttpMethod.Get, "/api/public/users/1/rooms", null, null, null))
+            .Item2!.ToJsonString()
+            .Should()
+            .Be("""{"errors":[{"param":"id","msg":"user.invalid_id","value":"1"}]}""");
 
         _db.Insert(new PlayerSettingsEntity { PlayerEntityId = 1, ProfileHidden = true });
 
         // A hidden profile is not found, not an empty list.
-        (await SendAsync(HttpMethod.Get, "/api/public/users/1/rooms"))
+        (await SendAsync(HttpMethod.Get, $"/api/public/users/{ownerUniqueId}/rooms"))
             .Should()
             .Be((404, "not-found"));
     }
