@@ -9,6 +9,7 @@ using Turbo.Rooms.Configuration;
 using Turbo.Rooms.Object.Logic.Furniture.Floor;
 using Turbo.Rooms.Object.Logic.Furniture.Floor.Wired;
 using Turbo.Rooms.Object.Logic.Furniture.Floor.Wired.Actions;
+using Turbo.Rooms.Object.Logic.Furniture.Floor.Wired.Addons;
 using Turbo.Rooms.Object.Logic.Furniture.Floor.Wired.Conditions;
 using Turbo.Rooms.Object.Logic.Furniture.Floor.Wired.Triggers;
 using Turbo.Rooms.Object.Logic.Furniture.Floor.WiredTrading;
@@ -36,6 +37,7 @@ public sealed class WiredPickRefusalTests
     private const int CONTRACT = 14;
     private const int LINKER = 15;
     private const int INIT_BOX = 16;
+    private const int CUSTOM_CONTRACT = 17;
 
     private readonly WiredRoom _room = new(8, 8);
 
@@ -185,6 +187,7 @@ public sealed class WiredPickRefusalTests
             .ErrorKey.Should()
             .Be("wiredfurni.error.require_contracts_or_trade_wired");
         (await SaveAsync<UpdateActionMessage>(stuffIds: [CONTRACT, INIT_BOX])).Should().BeTrue();
+        (await SaveAsync<UpdateActionMessage>(stuffIds: [CUSTOM_CONTRACT])).Should().BeTrue();
     }
 
     [Fact]
@@ -197,6 +200,10 @@ public sealed class WiredPickRefusalTests
             .ErrorKey.Should()
             .Be("wiredfurni.error.require_contracts_or_trade_wired");
         (await SaveAsync<UpdateTriggerMessage>(stuffIds: [CONTRACT])).Should().BeTrue();
+        // Tester report 2026-10-22: the custom contract was refused as "not a contract".
+        (await SaveAsync<UpdateTriggerMessage>(stuffIds: [CUSTOM_CONTRACT]))
+            .Should()
+            .BeTrue();
     }
 
     [Fact]
@@ -316,7 +323,8 @@ public sealed class WiredPickRefusalTests
         }
     }
 
-    private void AddContract() =>
+    private void AddContract()
+    {
         _room.AddFloorItem(
             CONTRACT,
             4,
@@ -324,4 +332,6 @@ public sealed class WiredPickRefusalTests
             "wired_contract_payment",
             createLogic: (factory, ctx) => new FurnitureWiredPaymentContractLogic(factory, ctx)
         );
+        _room.AddBox<WiredAddonCustomContract>(CUSTOM_CONTRACT, 5, 6, "wf_xtra_custom_contract");
+    }
 }

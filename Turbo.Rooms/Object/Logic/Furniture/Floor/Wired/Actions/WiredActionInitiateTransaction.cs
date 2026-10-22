@@ -197,16 +197,20 @@ public class WiredActionInitiateTransaction(
     }
 
     /// <summary>
-    /// A custom contract addon on the stack wins, and the transaction is then this box's; a
-    /// picked contract is its own. Null when there is neither, or more than one contract: Habbo
-    /// names that failure "Misconfig Too Many Or No Contracts" (Creator Tools, failure reason 21).
+    /// A custom contract addon on the stack wins over the picked contracts. The transaction is
+    /// the contract's, the custom one's too ("Contracts are special furniture that define the
+    /// contents of a transaction", <c>special_items.chests.body.wf_xtra_custom_contract.desc</c>),
+    /// and this box's only when no contract was involved, as
+    /// <c>wiredfurni.error.require_contracts_or_trade_wired</c> puts it. Null when there is
+    /// neither, or more than one contract: Habbo names that failure "Misconfig Too Many Or No
+    /// Contracts" (Creator Tools, failure reason 21).
     /// </summary>
     private (WiredContractSnapshot? Contract, RoomObjectId SourceId) ResolveContract(
         IWiredExecutionContext ctx
     )
     {
         if (ctx.Policy.CustomContract is { } custom)
-            return (custom.BuildContract(ctx), ObjectId);
+            return (custom.BuildContract(ctx), custom.ContractFurniId);
 
         var contracts = GetFloorItems(WiredSlotSelection.ForSlot(this, ctx, SLOT_CONTRACTS))
             .Select(x => x.Logic)
