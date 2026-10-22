@@ -48,6 +48,12 @@ public class FurnitureAreaHideLogic(IStuffDataFactory stuffDataFactory, IRoomFlo
     public int ValueAt(int index) =>
         StuffData is INumberStuffData numbers ? numbers.ValueAt(index) : 0;
 
+    /// <summary>
+    /// "Make this furniture invisible": the hider itself goes out of sight while an Invisible
+    /// Furni Controller is on, whether it is on or off.
+    /// </summary>
+    public bool IsInvisible => ValueAt(INVISIBILITY_INDEX) == 1;
+
     /// <summary>Changes one int data value, as a smart variable write does, and announces it.</summary>
     public async Task SetValueAtAsync(int index, int value)
     {

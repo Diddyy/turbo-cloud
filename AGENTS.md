@@ -455,8 +455,10 @@ Grains may hold cached or in-memory state that will not reflect direct DB change
   picks the item up only when the client sends the pickup again with its confirm flag set.
 - A Room Area Hider hides furni by not sending them (`RoomFurniModule.AreaHide`): the client
   only takes the floor out of the area. Anything that sends a floor or wall item to the room
-  asks `IsHiddenByArea` first, as placing and moving do, and a change to a hider is announced
-  through `AnnounceHiddenItemsChangedAsync`.
+  asks `IsHidden` first, as placing and moving do, and a change to a hider is announced
+  through `AnnounceHiddenItemsChangedAsync`. A hider with "Make this furniture invisible" is
+  itself not sent while an Invisible Furni Controller is on (the module keeps that flag as the
+  clients were last told it, `RefreshInvisibleFurniAsync`).
 
 ### Teleporters
 - A teleporter (`FurnitureTeleportLogic`, logic `teleport`) is half of a pair. The pair is made

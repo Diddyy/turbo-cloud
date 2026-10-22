@@ -293,6 +293,80 @@ public sealed class RoomConfigurationFurniTests
     private Task<bool> PassHandItemAsync() =>
         _room.Harness.Room.PassHandItemAsync(ActionContext.CreateForPlayer(101, 1), 102, Ct);
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task The_controller_takes_away_a_hider_made_invisible_and_brings_it_back(
+        bool invisible
+    )
+    {
+        // Tester report 2026-10-22: "Make this furniture invisible" ticked, and the controller
+        // did nothing to the hider.
+        var controller = _room.AddFloorItem(
+            CONTROLLER,
+            1,
+            1,
+            "invisible_furni_control",
+            createLogic: (factory, ctx) => new FurnitureInvisibleFurniControlLogic(factory, ctx)
+        );
+        var hider = _room.AddFloorItem(
+            HIDER,
+            7,
+            7,
+            "area_hide",
+            createLogic: (factory, ctx) => new FurnitureAreaHideLogic(factory, ctx)
+        );
+        (
+            await hider.Logic.OnInteractAsync(
+                Owner,
+                new SetAreaHideInteraction
+                {
+                    RootX = 2,
+                    RootY = 2,
+                    Width = 2,
+                    Length = 2,
+                    Invisibility = invisible,
+                    WallItems = false,
+                    Invert = false,
+                },
+                Ct
+            )
+        ).Should().BeTrue();
+
+        await controller.Logic.OnUseAsync(Owner, 0, Ct);
+
+        var removed = _room.Harness.Fakes.SentToRoom<ObjectRemoveMessageComposer>();
+        var shown = (await EntryViewAsync()).FloorItems.Select(x => x.ObjectId);
+        if (invisible)
+        {
+            removed
+                .Should()
+                .ContainSingle()
+                .Which.Should()
+                .BeEquivalentTo(
+                    new { ObjectId = (RoomObjectId)HIDER, ByInvisibleFurniManager = true }
+                );
+            shown.Should().NotContain((RoomObjectId)HIDER);
+        }
+        else
+        {
+            removed.Should().BeEmpty();
+            shown.Should().Contain((RoomObjectId)HIDER);
+        }
+
+        await controller.Logic.OnUseAsync(Owner, 0, Ct);
+
+        _room
+            .Harness.Fakes.SentToRoom<ObjectAddMessageComposer>()
+            .Select(x => x.FloorItem.ObjectId)
+            .Should()
+            .Equal(invisible ? [(RoomObjectId)HIDER] : []);
+        (await EntryViewAsync())
+            .FloorItems.Select(x => x.ObjectId)
+            .Should()
+            .Contain((RoomObjectId)HIDER);
+    }
+
     private Task<RoomEntryViewSnapshot> EntryViewAsync() =>
         _room.Harness.Room.GetEntryViewAsync((PlayerId)105, Ct);
 

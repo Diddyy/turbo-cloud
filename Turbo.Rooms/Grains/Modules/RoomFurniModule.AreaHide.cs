@@ -23,10 +23,17 @@ namespace Turbo.Rooms.Grains.Modules;
 /// what it hides comes back when it is switched off. Everyone in the room is treated alike;
 /// avatars are not hidden. A hidden item is left out of the entry lists, taken away when an
 /// area starts to cover it and sent again when it stops, and placing or moving one keeps to the
-/// same rule.
+/// same rule. A hider set to "Make this furniture invisible" is itself hidden the same way while
+/// an Invisible Furni Controller is on (<c>widget.areahide.options.invisibility.info</c>: invisible
+/// furniture "can be controlled with" it; Flash's ObjectRemove and ItemRemove carry
+/// <c>byInvisibleFurniManager</c> for such removals, and <c>RoomEngine.disposeObjectFurniture</c>
+/// keeps the object to bring it back).
 /// </summary>
 public sealed partial class RoomFurniModule
 {
+    // Whether the room's invisible furni are hidden, as the clients were last told.
+    private bool _invisibleFurniHidden;
+
     internal List<FurnitureAreaHideLogic> GetActiveAreaHiders() =>
         [
             .. Items
@@ -35,16 +42,46 @@ public sealed partial class RoomFurniModule
                 .Where(x => x.GetActiveArea() is not null),
         ];
 
-    public bool IsHiddenByArea(IRoomItem item) => GetActiveAreaHiders().Any(x => x.Hides(item));
+    public bool IsHidden(IRoomItem item) => IsHidden(item, GetActiveAreaHiders());
 
-    /// <summary>Every item an area hides right now.</summary>
+    /// <summary>
+    /// Whether the item is out of sight: an area covers it, or it is an invisible furni while the
+    /// controller is on.
+    /// </summary>
+    internal bool IsHidden(IRoomItem item, List<FurnitureAreaHideLogic> hiders) =>
+        hiders.Any(x => x.Hides(item))
+        || _invisibleFurniHidden && item.Logic is FurnitureAreaHideLogic { IsInvisible: true };
+
+    /// <summary>Every item hidden right now.</summary>
     public HashSet<RoomObjectId> GetHiddenItemIds()
     {
         var hiders = GetActiveAreaHiders();
 
-        return hiders.Count == 0
+        return hiders.Count == 0 && !_invisibleFurniHidden
             ? []
-            : [.. Items.Where(item => hiders.Any(x => x.Hides(item))).Select(x => x.ObjectId)];
+            : [.. Items.Where(item => IsHidden(item, hiders)).Select(x => x.ObjectId)];
+    }
+
+    /// <summary>
+    /// After an Invisible Furni Controller changed, arrived or is leaving: takes the invisible
+    /// furni away when one is on now and none was, and sends them again when none is left on.
+    /// </summary>
+    public Task RefreshInvisibleFurniAsync(RoomObjectId? leaving, CancellationToken ct)
+    {
+        var hidden =
+            FurnitureConfigurationControlLogic.IsOnInRoom<FurnitureInvisibleFurniControlLogic>(
+                this,
+                leaving
+            );
+
+        if (hidden == _invisibleFurniHidden)
+            return Task.CompletedTask;
+
+        var hiddenBefore = GetHiddenItemIds();
+
+        _invisibleFurniHidden = hidden;
+
+        return AnnounceHiddenItemsChangedAsync(hiddenBefore, ct);
     }
 
     /// <summary>The floor items a player walking in is sent.</summary>
@@ -116,7 +153,7 @@ public sealed partial class RoomFurniModule
         var composers = new List<IComposer>();
         var hiders = GetActiveAreaHiders();
 
-        if (hiders.Count == 0 && !hiddenBefore.Values.Any(x => x))
+        if (hiders.Count == 0 && !_invisibleFurniHidden && !hiddenBefore.Values.Any(x => x))
             return composers;
 
         bool Shown(RoomObjectId id)
@@ -125,7 +162,7 @@ public sealed partial class RoomFurniModule
                 return true;
 
             var wasHidden = hiddenBefore.TryGetValue(id, out var before) && before;
-            var isHidden = hiders.Any(x => x.Hides(item));
+            var isHidden = IsHidden(item, hiders);
 
             if (wasHidden == isHidden)
                 return !isHidden;
@@ -148,7 +185,7 @@ public sealed partial class RoomFurniModule
     /// </summary>
     private IComposer? GetMoveComposer(IRoomItem item, bool wasHidden)
     {
-        var isHidden = IsHiddenByArea(item);
+        var isHidden = IsHidden(item);
 
         return (wasHidden, isHidden) switch
         {
